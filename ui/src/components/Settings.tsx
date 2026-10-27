@@ -48,7 +48,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
 
   async function runImport() {
     const p = importPath.trim();
-    if (!p) { setImportMsg("enter the path to a Burp XML export"); return; }
+    if (!p) { setImportMsg("enter the path to an XML item export"); return; }
     setImporting(true); setImportMsg("");
     try {
       const n = await api.importTraffic(p);
@@ -93,11 +93,11 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       <hr className="sep" />
       <h2>Import traffic</h2>
       <p className="mut">
-        Import a Burp Suite <b>XML item export</b> into history (in Burp: Target → right-click → "Save selected
-        items", or export Proxy history). Binary <code>.burp</code> project files aren't supported — export as XML first.
+        Import an <b>XML item export</b> from another proxy tool into history (its "Save selected
+        items" / export-history feature). Other tools' binary project files aren't supported — export items as XML first.
       </p>
       <div className="bapp-import">
-        <input placeholder="/path/to/burp-export.xml" value={importPath}
+        <input placeholder="/path/to/items-export.xml" value={importPath}
           onChange={(e) => setImportPath(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && runImport()} />
         <button className="btn start" disabled={importing} onClick={runImport}>{importing ? "Importing…" : "Import"}</button>

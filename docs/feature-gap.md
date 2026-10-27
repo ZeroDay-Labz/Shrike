@@ -1,6 +1,6 @@
 # Shrike — Feature-gap matrix
 
-Status vs. the public Burp Community (CE) / Professional (Pro) workflows. Honest
+Status vs. the workflows of the established commercial suites (community / professional tiers). Honest
 labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**.
 
 ## Foundational / Community toolkit
@@ -21,7 +21,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 
 ## Projects & persistence (spec priority #1)
 
-| Capability | Burp Pro | Shrike | Notes |
+| Capability | Commercial Pro tier | Shrike | Notes |
 | --- | --- | --- | --- |
 | Disk-backed project, autosave | Pro | **done** | SQLite WAL; writer thread autosaves. |
 | Schema version + migrations | — | **done** | `PRAGMA user_version` + migration runner. |
@@ -37,7 +37,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 
 ## Professional features
 
-| Capability | Burp Pro | Shrike | Notes |
+| Capability | Commercial Pro tier | Shrike | Notes |
 | --- | --- | --- | --- |
 | Intruder (unthrottled, §-positions) | Pro | **done** | 4 attack types; payload processing; generators (numbers/brute/case/null). |
 | Global project search | Pro | **planned** | History LIKE filters exist; full search planned. |
@@ -51,7 +51,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | REST API | Pro | **planned** | — |
 
 ## Explicit non-goals
-- Binary compatibility with Burp's proprietary `.burp` project files.
+- Binary compatibility with other tools' proprietary project files.
 - Running the proprietary Montoya/Extender API in-process. Shrike ships its own
   plugin API; a *separate, optional* Java bridge is an investigation item only
   (see [plugin-compatibility.md](plugin-compatibility.md)).

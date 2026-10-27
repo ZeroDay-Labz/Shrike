@@ -15,7 +15,7 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "shrike", version, about, long_about = None)]
 struct Cli {
     /// Directory for the CA and project data (default: platform data dir).
-    #[arg(long, global = true, env = "BURPSUIT_DATA_DIR")]
+    #[arg(long, global = true, env = "SHRIKE_DATA_DIR")]
     data_dir: Option<PathBuf>,
 
     #[command(subcommand)]

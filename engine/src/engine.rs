@@ -55,7 +55,7 @@ const META_PLUGINS: &str = "plugins";
 /// Maven Central downloads for the one-click JVM/Jython setup.
 const JVM_MONTOYA_URL: &str = "https://repo1.maven.org/maven2/net/portswigger/burp/extensions/montoya-api/2026.7/montoya-api-2026.7.jar";
 const JVM_JYTHON_URL: &str = "https://repo1.maven.org/maven2/org/python/jython-standalone/2.7.5b1/jython-standalone-2.7.5b1.jar";
-/// Published legacy Burp Extender API (the `burp.*` interfaces) — needed so
+/// Published legacy Extender API (the `burp.*` interfaces) — needed so
 /// Jython Python extensions can `import burp` and we can proxy the callbacks.
 const JVM_LEGACY_API_URL: &str = "https://repo1.maven.org/maven2/net/portswigger/burp/extender/burp-extender-api/2.3/burp-extender-api-2.3.jar";
 
@@ -563,22 +563,22 @@ impl Engine {
         self.store.integrity_check()
     }
 
-    /// Import HTTP traffic from a Burp Suite **XML item export** into history,
-    /// returning how many transactions were added. Binary `.burp` project files
-    /// are proprietary and not supported — export items as XML from Burp first.
+    /// Import HTTP traffic from an **XML item export** (the common `<items>` format) into history,
+    /// returning how many transactions were added. Other tools' binary project files
+    /// are proprietary and not supported — export items as XML first.
     pub fn import_traffic(&self, path: &str) -> Result<usize> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-        if crate::import::looks_like_burp_project(&bytes) {
+        if crate::import::looks_like_binary_project(&bytes) {
             return Err(anyhow!(
-                "this looks like a binary Burp .burp project, which Shrike can't read. In Burp, \
-                 use Target → 'Save selected items' (or export Proxy history) as XML, then import that file."
+                "this looks like a binary project file from another tool, which Shrike can't read. Export \
+                 its items as XML ('Save selected items' / export history), then import that file."
             ));
         }
         let xml = String::from_utf8_lossy(&bytes);
-        let txs = crate::import::transactions_from_burp_xml(&xml);
+        let txs = crate::import::transactions_from_items_xml(&xml);
         if txs.is_empty() {
             return Err(anyhow!(
-                "no importable items found — expected a Burp XML export containing <item> entries"
+                "no importable items found — expected an XML items export containing <item> entries"
             ));
         }
         self.store.import_transactions(txs)
@@ -687,7 +687,7 @@ impl Engine {
     }
 
     /// The full BApp catalog: the curated, featured top entries followed by the
-    /// complete PortSwigger mirror pulled from GitHub. Cache-first — the remote
+    /// complete catalog mirror pulled from GitHub. Cache-first — the remote
     /// list is fetched at most once a day (or when `refresh` is set) and served
     /// from `<data_dir>/bapp-catalog.json` in between. If the network is
     /// unavailable, it falls back to the cache, then to the curated list alone,
@@ -746,7 +746,7 @@ impl Engine {
         }
     }
 
-    /// Fetch and parse every page of the PortSwigger org's public repositories.
+    /// Fetch and parse every page of the catalog organisation's public repositories.
     fn fetch_github_catalog(&self) -> Result<Vec<BappEntry>> {
         let mut all = Vec::new();
         // ~530 repos at 100/page ≈ 6 pages; cap at 10 as a safety stop.
@@ -771,7 +771,7 @@ impl Engine {
 
     /// One-click install of a catalog entry by id. Uses the entry's direct
     /// download URL when it has one, otherwise resolves the latest GitHub release
-    /// package (.jar/.bapp) for `PortSwigger/<id>`. When there is no installable
+    /// package (.jar/.bapp) for `<org>/<id>`. When there is no installable
     /// package, reports [`InstallOutcome::NotInstallable`] so the UI can send the
     /// user to the source rather than failing a button.
     pub fn bapp_install_entry(&self, id: &str) -> Result<InstallOutcome> {
@@ -1195,7 +1195,7 @@ impl Engine {
     }
 
     /// One-click Jython setup: ensure the Java runtime is staged, then download
-    /// the Jython standalone jar and the legacy Burp Extender API so Python BApps
+    /// the Jython standalone jar and the legacy Extender API so Python BApps
     /// can run (they `import burp` and use the legacy callbacks API).
     pub fn jython_setup(&self) -> Result<JvmStatus> {
         self.jvm_setup()?;

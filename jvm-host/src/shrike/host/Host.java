@@ -11,7 +11,7 @@ import java.util.jar.JarFile;
 /**
  * Shrike's BApp compatibility host.
  *
- * Loads a Burp extension (Montoya API) in an isolated class loader and runs its
+ * Loads a BApp extension (Montoya API) in an isolated class loader and runs its
  * {@code initialize(MontoyaApi)} against a Montoya API we implement with a
  * universal reflective proxy: known calls (logging, extension name, UI tab
  * registration) do the real thing; everything else returns a safe default or a
@@ -19,7 +19,7 @@ import java.util.jar.JarFile;
  * extension logged and registered and report it as JSON on stdout.
  *
  * This is the clean-room compatibility layer: we provide our own implementation
- * of PortSwigger's *published* Montoya API (used here exactly as extension
+ * of the *published* Montoya API (used here exactly as extension
  * developers use it). Full traffic wiring is a later layer.
  *
  * Usage: java -cp host.jar:montoya-api.jar shrike.host.Host <extension.jar>
@@ -98,9 +98,9 @@ public final class Host {
             Throwable cause = (t instanceof InvocationTargetException && t.getCause() != null) ? t.getCause() : t;
             String cn = cause.getClass().getName();
             String hint = cn.contains("PyException") || cn.startsWith("org.python")
-                ? " (is this a legacy burp Python extension with a BurpExtender class?)"
+                ? " (is this a legacy Python BApp with a BurpExtender class?)"
                 : cn.contains("ClassNotFoundException")
-                    ? " (Jython / legacy burp API not on the classpath — install Jython in Extender)"
+                    ? " (Jython / legacy Extender API not on the classpath — install Jython in Addons)"
                     : "";
             realOut.println(json(false, cause.getClass().getSimpleName() + ": " + cause.getMessage() + hint));
         }

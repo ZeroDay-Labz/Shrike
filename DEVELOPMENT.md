@@ -1,6 +1,6 @@
 # Developing & testing Shrike
 
-Everything here runs from the repo root: `~/RustroverProjects/burpsuit`.
+Everything here runs from the repo root: the repository root.
 Prereqs are already installed on this box: Rust 1.98, Node 22, webkit2gtk-4.1.
 
 ## First time only

@@ -169,7 +169,7 @@ function BappStore(props: { onChanged: () => void }) {
     <>
       <div className="warnbar">
         Install from the catalog in one click. Shrike grabs a release package, a committed jar, or a Python
-        source file directly — no Burp licence needed. Java/Kotlin extensions that must be compiled show
+        source file directly — no commercial licence needed. Java/Kotlin extensions that must be compiled show
         <b> Open source</b> instead. Installed extensions appear under the <b>Installed</b> tab.
       </div>
       <div className="bapp-controls">
@@ -180,7 +180,7 @@ function BappStore(props: { onChanged: () => void }) {
         </select>
         <span className="mut">{matches.length} of {catalog.length}</span>
         <span className="spacer" />
-        <button className="btn" disabled={loadingCat} onClick={reloadCatalog} title="Re-pull the full catalog from the PortSwigger mirror">
+        <button className="btn" disabled={loadingCat} onClick={reloadCatalog} title="Re-pull the full catalog from its GitHub mirror">
           {loadingCat ? "Refreshing…" : "⟳ Refresh catalog"}
         </button>
       </div>

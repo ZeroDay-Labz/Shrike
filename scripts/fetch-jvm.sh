@@ -18,7 +18,7 @@ echo "Fetching Montoya API $MONTOYA_VER…"
   curl -fsSL -o "$LIB/montoya-api-$MONTOYA_VER.jar" \
     "https://repo1.maven.org/maven2/net/portswigger/burp/extensions/montoya-api/$MONTOYA_VER/montoya-api-$MONTOYA_VER.jar"
 
-echo "Fetching legacy Burp Extender API $LEGACY_VER (for Python/Jython extensions)…"
+echo "Fetching legacy Extender API $LEGACY_VER (for Python/Jython extensions)…"
 [ -f "$LIB/burp-extender-api-$LEGACY_VER.jar" ] || \
   curl -fsSL -o "$LIB/burp-extender-api-$LEGACY_VER.jar" \
     "https://repo1.maven.org/maven2/net/portswigger/burp/extender/burp-extender-api/$LEGACY_VER/burp-extender-api-$LEGACY_VER.jar"

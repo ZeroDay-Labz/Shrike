@@ -290,7 +290,16 @@ fn project_integrity(state: State<AppState>) -> CmdResult<bool> {
     state.engine.project_integrity().map_err(err)
 }
 
-/// Import traffic from a Burp XML item export at `path`; returns the count added.
+/// Tool the UI should open on launch, from `SHRIKE_START_TOOL` (automation /
+/// screenshots); `None` for the normal default.
+#[tauri::command]
+fn startup_tool() -> Option<String> {
+    std::env::var("SHRIKE_START_TOOL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Import traffic from an XML item export at `path`; returns the count added.
 #[tauri::command]
 async fn import_traffic(state: State<'_, AppState>, path: String) -> CmdResult<usize> {
     let engine = state.engine.clone();
@@ -838,6 +847,13 @@ pub fn run() {
             }));
             // Resolve the bundled JVM host jars so Java BApps can be run.
             engine_for_setup.set_jvm_resources(resolve_jvm_resources(app.handle()));
+            // Automation/screenshots: with SHRIKE_START_TOOL set, bring the proxy up
+            // immediately so captured traffic is there without clicking Start.
+            if std::env::var_os("SHRIKE_START_TOOL").is_some()
+                && let Err(e) = engine_for_setup.start_proxy()
+            {
+                warn!(error = %e, "demo proxy auto-start failed");
+            }
             // Window icon: shows in the X11 title bar / taskbar and on Windows.
             // On Wayland the dock icon comes from the installed .desktop entry
             // (packaged builds), so a dev run may still show a generic icon there.
@@ -869,6 +885,7 @@ pub fn run() {
             project_backup,
             project_integrity,
             import_traffic,
+            startup_tool,
             ui_state_get,
             ui_state_set,
             ca_info,

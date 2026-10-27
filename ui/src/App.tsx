@@ -97,6 +97,11 @@ export default function App() {
   const filterRef = useRef(filter);
   filterRef.current = filter;
 
+  // SHRIKE_START_TOOL=<tool id> opens the app on that tool (automation / screenshots).
+  useEffect(() => {
+    api.startupTool().then((t) => { if (t) setTool(t); }).catch(() => {});
+  }, []);
+
   // Addons live in their own expand/retract side section: every installed addon
   // is listed there; running ones also carry live metadata and streamed logs.
   const [installedBapps, setInstalledBapps] = useState<InstalledBapp[]>([]);

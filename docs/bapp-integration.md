@@ -1,16 +1,16 @@
 # BApp Store integration — findings & plan (Phase A)
 
 Status: **desk analysis**. Items marked (verify) must be confirmed against the live
-official pages before any adapter is built. This project never bypasses Burp
+official pages before any adapter is built. This project never bypasses any vendor
 licensing and never rehosts third-party packages whose license forbids it.
 
 ## What the BApp Store is
 
-The BApp Store is PortSwigger's web catalog of Burp extensions at
-`https://portswigger.net/bappstore`. Each listing is a human-facing web page with:
+The BApp Store is the public web catalog of BApp extensions, mirrored as
+per-extension GitHub repositories. Each listing is a human-facing web page with:
 name, author, a description, categories, a popularity/rating indicator, a
 "last updated" date, a link to the **source repository** (usually GitHub), and a
-downloadable extension package. Extensions are installed inside Burp from the
+downloadable extension package. Extensions are installed inside the vendor's suite from the
 Extensions tab.
 
 ## Programmatic access
@@ -23,7 +23,7 @@ Extensions tab.
      official listing and source repo, and lets the user import a `.bapp`/`.jar`
      they downloaded themselves.
   2. **Conservative cache-first adapter** over publicly accessible catalog data,
-     *only if* PortSwigger's terms permit automated access (verify). It must be
+     *only if* the vendor's terms permit automated access (verify). It must be
      cache-first (ETag/Last-Modified), refresh on demand, never poll, and degrade
      to option 1 offline.
 - We never block app startup on catalog access.
@@ -35,13 +35,13 @@ Extensions tab.
   fields available programmatically).
 - Metadata we can show when available: name, author, description, categories,
   official listing URL, source repo URL, latest version, last-updated date, and
-  PortSwigger's own estimated impact ratings — clearly labelled as **their
+  the vendor's own estimated impact ratings — clearly labelled as **their
   estimates**, distinct from any impact we measure locally.
 
 ## Runtimes (why "downloadable" ≠ "runnable" here)
 
-Burp extensions target Burp's APIs on the **JVM**:
-- **Java / Montoya API** (modern) or the **legacy Burp Extender API**.
+BApp extensions target JVM-based extension APIs:
+- **Java / Montoya API** (modern) or the **legacy Extender API**.
 - **Python** extensions run via **Jython** (JVM); **Ruby** via **JRuby** (JVM).
 
 Shrike is a Rust process with no JVM. Consequently **no BApp runs natively** in

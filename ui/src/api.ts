@@ -23,6 +23,7 @@ export const api = {
   projectBackup: (path: string) => invoke<string>("project_backup", { path }),
   projectIntegrity: () => invoke<boolean>("project_integrity"),
   importTraffic: (path: string) => invoke<number>("import_traffic", { path }),
+  startupTool: () => invoke<string | null>("startup_tool"),
   uiStateGet: (key: string) => invoke<string | null>("ui_state_get", { key }),
   uiStateSet: (key: string, value: string) => invoke<void>("ui_state_set", { key, value }),
   caInfo: () => invoke<CaInfo>("ca_info"),

@@ -1,51 +1,139 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Shrike — web security testing suite">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Shrike — security and trust">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#12151c"/>
-      <stop offset="1" stop-color="#07090d"/>
+      <stop offset="0" stop-color="#0d1118"/>
+      <stop offset="1" stop-color="#05070b"/>
     </linearGradient>
-    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#60a5fa"/>
-      <stop offset="1" stop-color="#2563eb"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="0.22" cy="0.5" r="0.45">
-      <stop offset="0" stop-color="#2563eb" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#2563eb" stop-opacity="0"/>
-    </radialGradient>
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#1f2430" stroke-width="1"/>
+      <path d="M40 0H0V40" fill="none" stroke="#161c27" stroke-width="1"/>
     </pattern>
+    <radialGradient id="hudGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.22"/>
+      <stop offset="0.6" stop-color="#22d3ee" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff3b5c" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#ff3b5c" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#ff3b5c" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="steelLight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e8eef7"/>
+      <stop offset="1" stop-color="#8a9bb5"/>
+    </linearGradient>
+    <linearGradient id="steelMid" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b7c5da"/>
+      <stop offset="1" stop-color="#5f7090"/>
+    </linearGradient>
+    <linearGradient id="steelDark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7d8ea8"/>
+      <stop offset="1" stop-color="#36425a"/>
+    </linearGradient>
+    <linearGradient id="redTip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff7a93"/>
+      <stop offset="1" stop-color="#c8103d"/>
+    </linearGradient>
+    <linearGradient id="beakTop" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9bb0"/>
+      <stop offset="1" stop-color="#ff3d6e"/>
+    </linearGradient>
+    <linearGradient id="beakBottom" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e3184a"/>
+      <stop offset="1" stop-color="#8f0a2c"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f1f5fb"/>
+      <stop offset="0.55" stop-color="#b9c8de"/>
+      <stop offset="1" stop-color="#7fa6e8"/>
+    </linearGradient>
+    <filter id="blur8" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
   </defs>
 
   <rect width="1280" height="640" fill="url(#bg)"/>
   <rect width="1280" height="640" fill="url(#grid)"/>
-  <rect width="1280" height="640" fill="url(#glow)"/>
 
-  <!-- mark -->
-  <g transform="translate(120 170) scale(2.35)">
-    <rect x="4" y="4" width="120" height="120" rx="28" fill="#171a21"/>
-    <rect x="4.5" y="4.5" width="119" height="119" rx="27.5" fill="none" stroke="#2a2f3a"/>
-    <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5"/>
-    <circle cx="64" cy="64" r="15" fill="none" stroke="url(#ring)" stroke-width="5"/>
-    <path d="M64 18v12M64 98v12M18 64h12M98 64h12" stroke="#60a5fa" stroke-width="5" stroke-linecap="round"/>
-    <path d="M104 24 L74 54 L84 64 L112 36 Z" fill="#ef4444"/>
-    <circle cx="64" cy="64" r="5" fill="#ef4444"/>
+  <!-- ===== HUD target + diving shrike ===== -->
+  <g transform="translate(-30 0)">
+    <circle cx="330" cy="340" r="230" fill="url(#hudGlow)"/>
+
+    <!-- rings -->
+    <circle cx="330" cy="340" r="150" fill="none" stroke="#22d3ee" stroke-width="5"/>
+    <circle cx="330" cy="340" r="136" fill="none" stroke="#22d3ee" stroke-width="2" stroke-dasharray="46 30" opacity="0.6"/>
+    <circle cx="330" cy="340" r="118" fill="none" stroke="#38bdf8" stroke-width="3" stroke-dasharray="10 10" stroke-linecap="round"/>
+    <circle cx="330" cy="340" r="78" fill="none" stroke="#22d3ee" stroke-width="4"/>
+    <circle cx="330" cy="340" r="36" fill="none" stroke="#67e8f9" stroke-width="3"/>
+    <g stroke="#67e8f9" stroke-width="3" stroke-linecap="round">
+      <path d="M330 180v14M330 486v14M170 340h14M476 340h14"/>
+      <path d="M443 227l-10 10M227 227l10 10M443 453l-10-10M227 453l10-10"/>
+    </g>
+    <path d="M330 140v34M330 506v34M130 340h34M496 340h34" stroke="#22d3ee" stroke-width="5" stroke-linecap="round"/>
+    <path d="M330 262v40M330 378v40M252 340h40M368 340h40" stroke="#22d3ee" stroke-width="2.5" opacity="0.8"/>
+    <g fill="#ff3b5c">
+      <circle cx="212" cy="262" r="3"/><circle cx="455" cy="420" r="2.5"/><circle cx="238" cy="440" r="2"/>
+      <circle cx="430" cy="214" r="2"/><circle cx="300" cy="500" r="2.5"/><circle cx="200" cy="360" r="1.8"/>
+    </g>
+    <circle cx="330" cy="340" r="40" fill="url(#coreGlow)"/>
+    <circle cx="330" cy="340" r="9" fill="#ff3b5c"/>
+    <circle cx="330" cy="340" r="4" fill="#ffd9e0"/>
+
+    <!-- strike glow under the beak -->
+    <path d="M338 334 L366 296 L400 292 L386 328 Z" fill="#ff3d6e" opacity="0.6" filter="url(#blur8)"/>
+
+    <!-- far wing (behind the body), raised and swept back -->
+    <path d="M505 246 L560 150 L640 90 L690 88 L640 160 L560 240 Z" fill="url(#steelDark)"/>
+    <path d="M512 250 L600 190 L700 160 L740 170 L680 215 L560 255 Z" fill="url(#redTip)" opacity="0.9"/>
+
+    <!-- tail -->
+    <path d="M560 205 L640 180 L690 190 L620 215 Z" fill="url(#steelDark)"/>
+    <path d="M566 214 L650 218 L660 238 L600 232 Z" fill="url(#redTip)"/>
+
+    <!-- body: tapered hull diving toward the core -->
+    <path d="M392 284 L450 246 L540 196 L576 206 L556 232 L470 282 L420 312 L396 314 Z" fill="url(#steelMid)"/>
+    <path d="M450 246 L540 196 L576 206 L556 232 Z" fill="#ffffff" opacity="0.10"/>
+
+    <!-- near wing (in front), raised high -->
+    <path d="M462 262 L480 180 L520 100 L560 70 L548 130 L500 210 L480 268 Z" fill="url(#steelDark)"/>
+    <path d="M470 264 L520 170 L590 98 L640 76 L610 150 L540 230 L486 270 Z" fill="url(#steelLight)"/>
+    <path d="M478 268 L560 190 L660 140 L710 140 L650 200 L560 258 L494 274 Z" fill="url(#redTip)"/>
+    <g stroke="#263247" stroke-width="1.6" opacity="0.85" fill="none">
+      <path d="M480 180 L480 268M520 170 L486 270M560 190 L494 274"/>
+    </g>
+
+    <!-- head -->
+    <path d="M360 292 L392 270 L430 266 L452 284 L446 312 L416 326 L386 322 Z" fill="url(#steelLight)"/>
+    <path d="M392 270 L430 266 L452 284 L446 312 Z" fill="#000" opacity="0.12"/>
+    <circle cx="428" cy="290" r="6" fill="#ff3b5c"/>
+    <circle cx="430" cy="288" r="2.2" fill="#ffd9e0"/>
+
+    <!-- talons, tucked -->
+    <g stroke="#3a465c" stroke-width="4.5" stroke-linecap="round" fill="none">
+      <path d="M468 300 L466 322M486 304 L488 326"/>
+    </g>
+
+    <!-- crystal beak driven into the core -->
+    <path d="M338 334 L366 296 L400 292 L380 318 Z" fill="url(#beakTop)"/>
+    <path d="M338 334 L380 318 L386 328 Z" fill="url(#beakBottom)"/>
+    <path d="M343 330 L396 295" stroke="#ffe0e8" stroke-width="1.6" stroke-linecap="round" opacity="0.9"/>
   </g>
 
-  <!-- wordmark + tagline -->
-  <text x="470" y="262" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="118" font-weight="700" fill="#f3f4f6" letter-spacing="-3">Shrike</text>
-  <text x="474" y="322" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="34" font-weight="500" fill="#9aa3b2">Web security testing suite, built in Rust.</text>
-  <text x="474" y="366" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="26" fill="#6b7280">Intercepting proxy · Repeater · Intruder · Scanner · Addons</text>
+  <!-- ===== wordmark ===== -->
+  <text x="806" y="300" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="100" font-weight="800" letter-spacing="2" fill="url(#wordmark)">SHRIKE</text>
+  <text x="810" y="344" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="26" font-weight="600" letter-spacing="6" fill="#7fd3ff">SECURITY &amp; TRUST</text>
+  <text x="810" y="392" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#9aa3b2">Open-source web security testing suite,</text>
+  <text x="810" y="420" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#9aa3b2">built in Rust.</text>
 
-  <!-- feature chips -->
-  <g font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="600">
-    <rect x="474" y="412" width="196" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
-    <text x="572" y="443" text-anchor="middle" fill="#93c5fd">HTTPS MITM</text>
-    <rect x="684" y="412" width="226" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
-    <text x="797" y="443" text-anchor="middle" fill="#93c5fd">Burp BApps run</text>
-    <rect x="924" y="412" width="212" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
-    <text x="1030" y="443" text-anchor="middle" fill="#93c5fd">Bundled browser</text>
+  <g font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="19" font-weight="600">
+    <rect x="810" y="448" width="150" height="40" rx="20" fill="#131a26" stroke="#263247"/>
+    <text x="885" y="475" text-anchor="middle" fill="#93c5fd">HTTPS MITM</text>
+    <rect x="970" y="448" width="112" height="40" rx="20" fill="#131a26" stroke="#263247"/>
+    <text x="1026" y="475" text-anchor="middle" fill="#93c5fd">Intruder</text>
+    <rect x="1092" y="448" width="100" height="40" rx="20" fill="#131a26" stroke="#263247"/>
+    <text x="1142" y="475" text-anchor="middle" fill="#93c5fd">BApps</text>
+    <rect x="810" y="498" width="184" height="40" rx="20" fill="#131a26" stroke="#263247"/>
+    <text x="902" y="525" text-anchor="middle" fill="#93c5fd">Bundled browser</text>
+    <rect x="1004" y="498" width="130" height="40" rx="20" fill="#131a26" stroke="#263247"/>
+    <text x="1069" y="525" text-anchor="middle" fill="#93c5fd">JWT tools</text>
   </g>
 
-  <text x="474" y="560" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="24" fill="#6b7280">Open source · MIT · github.com/ZeroDay-Labz/Shrike</text>
+  <text x="810" y="590" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="21" fill="#6b7280">MIT · github.com/ZeroDay-Labz/Shrike</text>
 </svg>

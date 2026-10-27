@@ -2,7 +2,7 @@
 
 Populated by `scripts/fetch-jvm.sh` (not committed — too big):
 - `shrike-host.jar`            — Shrike's compatibility host (built from `jvm-host/`)
-- `montoya-api-<ver>.jar`      — PortSwigger's published Montoya API (compile/link target)
+- `montoya-api-<ver>.jar`      — the published Montoya API (compile/link target)
 - `jython-standalone-<ver>.jar`— Jython, for Python BApps
 - `runtime/`                   — a minimal JRE from `jlink` (so no system Java is required)
 

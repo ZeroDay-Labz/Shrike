@@ -4,9 +4,9 @@
     "name": "Logger++",
     "author": "Corey Arthur, Soroush Dalili (NCC Group)",
     "category": "Logging",
-    "description": "Advanced, filterable logging of HTTP requests/responses across all Burp tools, with a powerful grid, filters and export.",
+    "description": "Advanced, filterable logging of HTTP requests/responses across all the host suite tools, with a powerful grid, filters and export.",
     "repo_url": "https://github.com/nccgroup/LoggerPlusPlus",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/nccgroup/LoggerPlusPlus",
     "runtime": "Java (Montoya API, JVM)",
     "native_equivalent": "Logger tool + HTTP history filters",
     "download_url": "https://github.com/nccgroup/LoggerPlusPlus/releases/download/v3.20.1/LoggerPlusPlus.jar"
@@ -14,11 +14,11 @@
   {
     "id": "hackvertor",
     "name": "Hackvertor",
-    "author": "Gareth Heyes (PortSwigger)",
+    "author": "community (public catalog)",
     "category": "Encoding / transformation",
     "description": "Tag-based conversion of text: encode/decode, hashing, encryption and custom transforms, usable inline in requests.",
     "repo_url": "https://github.com/hackvertor/hackvertor",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/hackvertor/hackvertor",
     "runtime": "Java (Montoya API, JVM)",
     "native_equivalent": "Decoder + Match & Replace + Intruder processors",
     "download_url": "https://github.com/hackvertor/hackvertor/releases/download/v2.2.67/hackvertor-v2.2.67.jar"
@@ -30,18 +30,18 @@
     "category": "JWT / tokens",
     "description": "Inspect, edit, sign and verify JSON Web Tokens and JWKs; attack weak signing and key-confusion issues.",
     "repo_url": "https://github.com/portswigger/jwt-editor",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/portswigger/jwt-editor",
     "runtime": "Java (Montoya API, JVM)",
     "native_equivalent": null
   },
   {
     "id": "param-miner",
     "name": "Param Miner",
-    "author": "James Kettle (PortSwigger)",
+    "author": "community (public catalog)",
     "category": "Discovery / scanner",
     "description": "Discovers hidden, unlinked request parameters and headers; useful for cache poisoning and hidden functionality.",
     "repo_url": "https://github.com/PortSwigger/param-miner",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/PortSwigger/param-miner",
     "runtime": "Java (Montoya API, JVM)",
     "native_equivalent": null,
     "download_url": "https://github.com/PortSwigger/param-miner/releases/download/v1.51/param-miner-all.jar"
@@ -49,11 +49,11 @@
   {
     "id": "turbo-intruder",
     "name": "Turbo Intruder",
-    "author": "James Kettle (PortSwigger)",
+    "author": "community (public catalog)",
     "category": "Intruder / fuzzing",
     "description": "Sends very large numbers of HTTP requests with fine-grained, scriptable scheduling; good for race conditions.",
     "repo_url": "https://github.com/PortSwigger/turbo-intruder",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/PortSwigger/turbo-intruder",
     "runtime": "Python (Jython, JVM)",
     "native_equivalent": "Intruder (bounded concurrency)",
     "download_url": "https://github.com/PortSwigger/turbo-intruder/releases/download/1.0.19/turbo-intruder-all.jar"
@@ -65,18 +65,18 @@
     "category": "Authorization",
     "description": "Automatically tests for authorization flaws by replaying requests with a low-privilege session and comparing responses.",
     "repo_url": "https://github.com/Quitten/Autorize",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/Quitten/Autorize",
     "runtime": "Python (Jython, JVM)",
     "native_equivalent": null
   },
   {
     "id": "active-scan-plus-plus",
     "name": "ActiveScan++",
-    "author": "James Kettle (PortSwigger)",
+    "author": "community (public catalog)",
     "category": "Scanner",
     "description": "Extends the active/passive scanner with extra checks (host header attacks, injection variants, etc.).",
     "repo_url": "https://github.com/albinowax/ActiveScanPlusPlus",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/albinowax/ActiveScanPlusPlus",
     "runtime": "Python (Jython, JVM)",
     "native_equivalent": null,
     "download_url": "https://github.com/albinowax/ActiveScanPlusPlus/releases/download/2.0.0/active-scan-plus-plus-all.jar"
@@ -88,7 +88,7 @@
     "category": "Scanner / JavaScript",
     "description": "Passively flags use of JavaScript libraries with known vulnerabilities, based on the retire.js dataset.",
     "repo_url": "https://github.com/h3xstream/burp-retire-js",
-    "listing_url": "https://portswigger.net/bappstore",
+    "listing_url": "https://github.com/h3xstream/burp-retire-js",
     "runtime": "Java (Montoya API, JVM)",
     "native_equivalent": null
   }

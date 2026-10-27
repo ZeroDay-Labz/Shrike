@@ -1,7 +1,7 @@
 # Shrike — Architecture
 
 Shrike is an original, clean-room web-security testing suite in Rust. It models the
-*workflows* of Burp Suite (Community + Professional) but shares no code, assets, or
+*workflows* of the established commercial web security suites but shares no code, assets, or
 project format with it. This document describes the architecture as it exists today.
 
 ## Workspace layout (Cargo workspace)

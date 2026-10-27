@@ -7,7 +7,7 @@
 <p align="center">
   A clean-room <b>web security testing suite in Rust</b>: intercepting HTTPS proxy, Repeater, Intruder,
   Decoder, Comparer, Sequencer, JWT tools, a bundled Chromium, project files, and an addon system that
-  runs Burp BApps (Java and Python) alongside native plugins. Think Burp Suite Pro, rebuilt from scratch
+  runs BApps (Java and Python) alongside native plugins. A full professional-grade suite, rebuilt from scratch
   and open source.
 </p>
 
@@ -24,7 +24,7 @@
 
 Shrike is developed by [ZeroDay-Labz](https://github.com/ZeroDay-Labz) and licensed under MIT.
 Nothing in it is derived from any proprietary tool's source or binary: it is modelled only on the
-published Burp Montoya / Extender APIs, public documentation, observable behaviour and open-source
+published Montoya / Extender extension APIs, public documentation, observable behaviour and open-source
 analogues. See [docs/architecture.md](docs/architecture.md) and [docs/feature-gap.md](docs/feature-gap.md).
 
 ## Download
@@ -56,13 +56,13 @@ your `PATH`. The **Addons ▸ Store & installed** tab sets up the host and Jytho
   and a virtualised results grid.
 * **Decoder · Comparer · Sequencer · Logger · Dashboard** — the usual toolkit, native.
 * **JWT** — decode, edit and re-sign tokens (HS256/384/512, `none`), in-app, no JVM.
-* **Addons** — a BApp Store that mirrors the full PortSwigger catalog (featured first) and installs
+* **Addons** — a BApp Store that mirrors the full public catalog from GitHub (featured first) and installs
   with one click from a release package, a committed jar **or straight from source** (Python entry
   points anywhere in the repo), then runs the extension in Shrike's own JVM host: Java via the
   published Montoya API, Python via Jython and the legacy Extender API. Each running addon gets its
   own entry in the side panel with a live console. Plus a native plugin API for Rust-side extensions.
 * **Projects** — everything persists in an on-disk SQLite project (backup / save-a-copy, UI state),
-  and Burp XML item exports import straight into history.
+  and XML item exports from other tools import straight into history.
 
 ## Screenshots
 
@@ -70,9 +70,9 @@ your `PATH`. The **Addons ▸ Store & installed** tab sets up the host and Jytho
 | --- | --- |
 | ![Proxy](docs/screenshots/proxy.png) | ![Intruder](docs/screenshots/intruder.png) |
 
-| Addons side panel | Repeater |
+| Addons side panel | JWT tool |
 | --- | --- |
-| ![Addons](docs/screenshots/addons.png) | ![Repeater](docs/screenshots/repeater.png) |
+| ![Addons](docs/screenshots/addons.png) | ![JWT](docs/screenshots/jwt.png) |
 
 Screenshots are taken against local lab targets only — no real hosts, cookies or tokens.
 

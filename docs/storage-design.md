@@ -4,7 +4,7 @@
 
 A single **SQLite** database per project (rusqlite, WAL mode). SQLite is
 transactional, crash-safe, embeddable, and gives a consistent single-file project
-artifact — a good fit for Burp-style project files without a server. Large binary
+artifact — a good fit for single-file project files without a server. Large binary
 bodies are stored inside the row today (see "Bodies" for the evolution path).
 
 ## Current schema (`schema_version = 1`)
@@ -70,5 +70,5 @@ integrity check, consistent backup/export, Repeater-tab persistence, generic
 5. Content-addressed body store + configurable retention + size/disk warnings.
 
 No incompatible or undocumented on-disk format is introduced: it is plain SQLite,
-inspectable with any SQLite tool. Compatibility with Burp's proprietary project
+inspectable with any SQLite tool. Compatibility with other tools' proprietary project
 files is **not** claimed.

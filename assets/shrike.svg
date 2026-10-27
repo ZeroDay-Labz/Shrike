@@ -1,23 +1,50 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Shrike">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#171a21"/>
-      <stop offset="1" stop-color="#0b0d12"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#151a2b"/>
+      <stop offset="0.55" stop-color="#0d1120"/>
+      <stop offset="1" stop-color="#090b14"/>
     </linearGradient>
     <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#60a5fa"/>
-      <stop offset="1" stop-color="#2563eb"/>
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
     </linearGradient>
+    <linearGradient id="facetTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8fa6"/>
+      <stop offset="1" stop-color="#ff3d6e"/>
+    </linearGradient>
+    <linearGradient id="facetBottom" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e3184a"/>
+      <stop offset="1" stop-color="#a80b33"/>
+    </linearGradient>
+    <radialGradient id="coreGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff3d6e" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ff3d6e" stop-opacity="0"/>
+    </radialGradient>
   </defs>
+
   <!-- tile -->
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
-  <rect x="4.5" y="4.5" width="119" height="119" rx="27.5" fill="none" stroke="#2a2f3a"/>
-  <!-- target rings: the thing being tested -->
-  <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5"/>
-  <circle cx="64" cy="64" r="15" fill="none" stroke="url(#ring)" stroke-width="5"/>
-  <!-- crosshair ticks -->
-  <path d="M64 18v12M64 98v12M18 64h12M98 64h12" stroke="#60a5fa" stroke-width="5" stroke-linecap="round"/>
-  <!-- the shrike's hooked beak: a strike slicing in from the top-right -->
-  <path d="M104 24 L74 54 L84 64 L112 36 Z" fill="#ef4444"/>
-  <circle cx="64" cy="64" r="5" fill="#ef4444"/>
+  <rect x="3" y="3" width="122" height="122" rx="27" fill="url(#tile)"/>
+  <rect x="3.6" y="3.6" width="120.8" height="120.8" rx="26.4" fill="none" stroke="#2b3447" stroke-width="1.2"/>
+
+  <!-- faint selection square behind the core -->
+  <rect x="53" y="53" width="22" height="22" rx="3" fill="#1b2a4a" opacity="0.15"/>
+
+  <!-- target rings -->
+  <circle cx="64" cy="64" r="36" fill="none" stroke="url(#ring)" stroke-width="5"/>
+  <circle cx="64" cy="64" r="26" fill="none" stroke="#0ea5c9" stroke-width="2.6" stroke-dasharray="7 6" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="15.5" fill="none" stroke="url(#ring)" stroke-width="4.5"/>
+
+  <!-- crosshair ticks, set off the outer ring -->
+  <path d="M64 8v12M64 108v12M8 64h12M108 64h12" stroke="#2f9bff" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- the crystal shard: faceted, tip driven into the core -->
+  <circle cx="64" cy="64" r="22" fill="url(#coreGlow)"/>
+  <path d="M64 64 L89.4 27.5 L113 13 Z" fill="url(#facetTop)"/>
+  <path d="M64 64 L113 13 L99.4 37.3 Z" fill="url(#facetBottom)"/>
+  <path d="M66 62 L111 15" stroke="#ffd6e0" stroke-width="1.4" stroke-linecap="round" opacity="0.85"/>
+
+  <!-- core -->
+  <circle cx="64" cy="64" r="6.6" fill="#ffffff"/>
+  <circle cx="64" cy="64" r="3.1" fill="#ffd1dc"/>
 </svg>

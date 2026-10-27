@@ -1,6 +1,6 @@
 //! BApp Store integration (catalog + safe package inspection).
 //!
-//! Honest by construction: Burp extensions target the JVM (Montoya/Extender API,
+//! Honest by construction: BApp extensions target the JVM (Montoya/Extender API,
 //! or Jython/JRuby). Shrike is a Rust process with no JVM, so **no BApp runs
 //! natively here**. This module lets the user browse a curated catalog, open the
 //! official listing/source, and *inspect* a downloaded package safely (hash +
@@ -50,7 +50,7 @@ pub fn catalog() -> Vec<BappEntry> {
     entries
 }
 
-/// Repo names in the PortSwigger org that are not installable extensions
+/// Repo names in the catalog org that are not installable extensions
 /// (tooling, the store site, API jars, check bundles) — filtered from the
 /// "pull all" catalog so the list stays to actual BApps.
 fn is_catalog_repo(name: &str) -> bool {
@@ -109,12 +109,12 @@ pub fn parse_github_repos(json: &str) -> Result<Vec<BappEntry>> {
         .filter(|r| !r.archived && !r.fork && is_catalog_repo(&r.name))
         .map(|r| BappEntry {
             name: humanize(&r.name),
-            author: "PortSwigger / community".to_string(),
+            author: "community (public catalog)".to_string(),
             category: "Community".to_string(),
             description: r
                 .description
                 .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| "Burp extension from the PortSwigger BApp mirror.".to_string()),
+                .unwrap_or_else(|| "BApp from the public catalog's GitHub mirror.".to_string()),
             repo_url: if r.html_url.is_empty() {
                 format!("https://github.com/PortSwigger/{}", r.name)
             } else {
@@ -126,7 +126,7 @@ pub fn parse_github_repos(json: &str) -> Result<Vec<BappEntry>> {
                 r.html_url
             },
             download_url: None,
-            runtime: "Burp extension (JVM)".to_string(),
+            runtime: "BApp (JVM)".to_string(),
             native_equivalent: None,
             featured: false,
             id: r.name,
@@ -255,7 +255,7 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageInspection> {
     let (format, runtime, compatibility) = if ext == "bapp" || ext == "jar" || is_zip {
         (
             if ext == "bapp" { "bapp" } else { "jar" }.to_string(),
-            "Java (Burp Montoya/Extender API, JVM)".to_string(),
+            "Java (Montoya/Extender API, JVM)".to_string(),
             "Not runnable in Shrike's native runtime — requires a JVM. Candidate for the optional Java \
              compatibility host or a native reimplementation (see docs/plugin-compatibility.md)."
                 .to_string(),
@@ -264,13 +264,13 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageInspection> {
         (
             "python".to_string(),
             "Python via Jython (JVM)".to_string(),
-            "Not runnable natively — Burp runs Python extensions on Jython (a JVM).".to_string(),
+            "Not runnable natively — Python BApps run on Jython (a JVM).".to_string(),
         )
     } else if ext == "rb" {
         (
             "ruby".to_string(),
             "Ruby via JRuby (JVM)".to_string(),
-            "Not runnable natively — Burp runs Ruby extensions on JRuby (a JVM).".to_string(),
+            "Not runnable natively — Ruby BApps run on JRuby (a JVM).".to_string(),
         )
     } else {
         warnings.push("unrecognised package format".to_string());

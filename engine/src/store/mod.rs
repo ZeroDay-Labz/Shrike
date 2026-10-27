@@ -448,7 +448,7 @@ impl Store {
         Ok(())
     }
 
-    /// Insert imported transactions (e.g. from a Burp XML export), assigning each
+    /// Insert imported transactions (e.g. from an XML items export), assigning each
     /// a fresh id after the current maximum so they don't collide with live
     /// capture. Returns how many were queued. Blocks until they are written.
     pub fn import_transactions(&self, mut txs: Vec<Transaction>) -> Result<usize> {

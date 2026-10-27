@@ -1,7 +1,7 @@
 //! JVM compatibility host integration.
 //!
 //! Drives the Java side (`jvm-host/`, built to `shrike-host.jar`): launches a JVM
-//! that loads a Burp extension against our Montoya API implementation and reports
+//! that loads a BApp extension against our Montoya API implementation and reports
 //! what it did as JSON. This is the bridge that lets Shrike run real Java BApps.
 //! Python (Jython) extensions are run through the same host with the Jython jar on
 //! the classpath (scaffolded).

@@ -1,6 +1,6 @@
 # Plugin / extension compatibility model
 
-Shrike ships its **own** extension API. Burp extensions are not binary-compatible
+Shrike ships its **own** extension API. BApp extensions are not binary-compatible
 (they target the JVM-based Montoya/Extender API). Compatibility is therefore
 staged and each extension is classified honestly.
 

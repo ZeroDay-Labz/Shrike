@@ -1,10 +1,10 @@
 //! Import HTTP traffic from other tools into Shrike's history.
 //!
-//! Supports Burp Suite's **XML item export** (Target → "Save selected items",
+//! Supports the common **XML item export** format ("Save selected items",
 //! or the Proxy/Logger XML export): a list of `<item>` elements carrying the
-//! base64 request/response and some metadata. Burp's binary `.burp` *project*
+//! base64 request/response and some metadata. Other tools' binary *project*
 //! files are a proprietary, compressed format and are **not** parsed here — the
-//! honest path is to export items as XML from Burp first.
+//! honest path is to export items as XML first.
 
 use crate::core::{CapturedRequest, CapturedResponse, Header, HttpService, Transaction};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -99,9 +99,9 @@ fn decode_payload(content: &str, is_b64: bool) -> Vec<u8> {
     }
 }
 
-/// Parse Burp's XML item export into transactions ready for the history store.
+/// Parse an XML item export into transactions ready for the history store.
 /// Items without a parseable request are skipped.
-pub fn transactions_from_burp_xml(xml: &str) -> Vec<Transaction> {
+pub fn transactions_from_items_xml(xml: &str) -> Vec<Transaction> {
     let mut out = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<item>") {
@@ -151,9 +151,9 @@ pub fn transactions_from_burp_xml(xml: &str) -> Vec<Transaction> {
     out
 }
 
-/// True if the bytes look like a Burp binary `.burp` project (not XML items).
-pub fn looks_like_burp_project(bytes: &[u8]) -> bool {
-    // Burp project files are a zip-like/proprietary container, not XML.
+/// True if the bytes look like a binary project file (not XML items).
+pub fn looks_like_binary_project(bytes: &[u8]) -> bool {
+    // Such project files are a zip-like/proprietary container, not XML.
     let head = &bytes[..bytes.len().min(64)];
     !head.windows(6).any(|w| w == b"<items")
         && (bytes.starts_with(b"PK") || !is_probably_text(head))
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_a_burp_item() {
+    fn imports_an_item() {
         let req = "GET /search?q=1 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: x\r\n\r\n";
         let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\nhi";
         let xml = format!(
@@ -184,7 +184,7 @@ mod tests {
             b64(req),
             b64(resp)
         );
-        let txs = transactions_from_burp_xml(&xml);
+        let txs = transactions_from_items_xml(&xml);
         assert_eq!(txs.len(), 1);
         let t = &txs[0];
         assert_eq!(t.request.method, "GET");
@@ -204,7 +204,7 @@ mod tests {
           <item><protocol>http</protocol><host><![CDATA[a.com]]></host><port>80</port>\
            <request base64=\"false\">GET / HTTP/1.1\r\nHost: a.com\r\n\r\n</request></item>\
           </items>";
-        let txs = transactions_from_burp_xml(xml);
+        let txs = transactions_from_items_xml(xml);
         assert_eq!(txs.len(), 1, "item with no request is skipped");
         assert_eq!(txs[0].request.service.host, "a.com");
         assert!(txs[0].response.is_none());
@@ -212,9 +212,9 @@ mod tests {
 
     #[test]
     fn binary_project_is_detected() {
-        assert!(looks_like_burp_project(
+        assert!(looks_like_binary_project(
             b"PK\x03\x04\x00\x00binarygunk\x01\x02"
         ));
-        assert!(!looks_like_burp_project(b"<items><item></item></items>"));
+        assert!(!looks_like_binary_project(b"<items><item></item></items>"));
     }
 }
