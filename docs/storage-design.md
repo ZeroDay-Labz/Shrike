@@ -46,18 +46,22 @@ in place. New versions add `if version < N { … }` blocks.
 
 ## Bodies (large binary responses)
 
-Today bodies live in `view_json` (base64 for binary), bounded by
-`max_capture_bytes` (bodies over the cap stream through and are recorded
-truncated). **Planned**: a separate content-addressed body store (hash → blob)
+Bodies live in `view_json` (base64 for binary), bounded by `max_capture_bytes`.
+Capture is **streaming and memory-bounded**: the sender reads the response
+frame-by-frame and retains at most `max_capture_bytes` while still counting the
+true wire length and flagging truncated captures; the proxy buffers frame-by-frame
+up to a 64 MiB ceiling. A huge response can no longer balloon memory before being
+truncated. **Planned**: a separate content-addressed body store (hash → blob)
 referenced by transactions, so identical bodies dedupe and the metadata DB stays
-small; `max_capture_bytes` and response-body retention become per-project
-configurable.
+small, plus a zero-copy proxy tee that forwards past the ceiling while retaining
+only the head.
 
 ## What exists vs. planned (project lifecycle)
 
 **Done**: disk project, autosave, schema version + migrations, project metadata,
 integrity check, consistent backup/export, Repeater-tab persistence, generic
-`ui:*` UI-state persistence.
+`ui:*` UI-state persistence, **history retention** (keep newest-N, pruned in the
+writer thread; `history_max_rows`, 0 = unlimited) and an on-disk size readout.
 
 **Planned** (next slices, in order):
 1. Temporary projects: open a temp-file DB, warn on close, discard on exit.
@@ -66,8 +70,8 @@ integrity check, consistent backup/export, Repeater-tab persistence, generic
 3. Live open/switch without restart: make the `Store` swappable behind the engine
    (`Arc<ArcSwap<Store>>`-style), rebuild sinks, reload scope/match&replace/
    plugins/UI-state on switch.
-4. Intruder config + results persistence; notes/annotations; proxy filter prefs.
-5. Content-addressed body store + configurable retention + size/disk warnings.
+4. Intruder config + results persistence; findings + notes/annotations; proxy filter prefs.
+5. Content-addressed body store + per-project retention by age/size + disk warnings.
 
 No incompatible or undocumented on-disk format is introduced: it is plain SQLite,
 inspectable with any SQLite tool. Compatibility with other tools' proprietary project

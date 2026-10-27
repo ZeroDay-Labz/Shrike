@@ -16,8 +16,12 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Decoder | CE | **done** | url/base64/hex/html/case chains. |
 | Sequencer | CE | **partial** | Entropy + shape stats; not a full FIPS battery. |
 | Comparer | CE | **done** | Word/char LCS diff. |
+| JWT tool | Pro(BApp) | **done** | Native decode / edit / HS256-384-512 + `none` sign & verify (`engine/src/tools/jwt`). |
 | Target scope & exclusions | CE | **done** | Enforced in core for proxy **and Intruder** (out-of-scope requests blocked, never sent); include/exclude, regex. |
 | Site map | CE | **partial** | Built from history; no active crawl yet. |
+| Integrated browser | Pro | **done** | Bundled/system Chromium launched pre-configured for the proxy and already trusting the CA (SPKI allow-list). |
+| History query language | Pro | **done** | Shrike Query Language (`engine/src/query`) → parameterised SQL; one query box over history. |
+| Import traffic | Pro | **done** | XML item exports from other proxy tools import into history (`engine/src/import`). |
 
 ## Projects & persistence (spec priority #1)
 
@@ -33,7 +37,18 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Recent-projects list, launch chooser | Pro | **planned** | — |
 | Repeater tabs persisted | Pro | **done** | Via `ui:repeater` project state. |
 | Intruder configs/results persisted | Pro | **planned** | Config persistence next; results persistence after. |
-| Notes/annotations | Pro | **planned** | — |
+| Notes/annotations | Pro | **planned** | Arrives with Findings. |
+| History retention cap | Pro | **done** | Keep newest-N (configurable; 0 = unlimited), pruned in the writer thread. |
+
+## Reliability & safety (hardening)
+
+| Capability | Shrike | Notes |
+| --- | --- | --- |
+| Streaming bounded body capture | **done** | Sender reads frame-by-frame, retaining ≤ `max_capture` while counting true length; proxy has a 64 MiB buffering ceiling. Handles chunked / no-Content-Length. |
+| Request deadlines + cancellation | **done** | Per-request total timeout (`request_timeout_ms`); Intruder Stop aborts in-flight tasks immediately. |
+| Safe extension install | **done** | Installs are quarantined (download + hash + classify), never executed until an explicit Run. |
+| Hardened external-URL open | **done** | http(s)-only, validated, no shell on Windows. |
+| Content-Security-Policy | **done** | Restrictive CSP on the webview. |
 
 ## Professional features
 
@@ -46,8 +61,10 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Crawler | Pro | **planned** | — |
 | Out-of-band (Collaborator-style) | Pro | **planned** | Opt-in, user-configured; not started. |
 | Extensibility / plugin API | Pro | **partial** | Manifest registry + permissions/hooks; BApps run in a JVM host (Java/Montoya + Python/Jython). Installs are quarantined and never executed until an explicit Run. Native sandboxed execution runtime planned. |
-| BApp store integration | Pro | **planned** | See [bapp-integration.md](bapp-integration.md). |
-| Reporting (HTML/XML/JSON) | Pro | **planned** | Backup/export exists at DB level. |
+| BApp store integration | Pro | **done** | Full public catalog mirrored from GitHub; one-click install from a release, committed jar, or source (Python). JVM host runs Java (Montoya) + Python (Jython). See [bapp-integration.md](bapp-integration.md). |
+| Reporting (HTML/XML/JSON) | Pro | **planned** | Project backup/export exists at DB level; a Findings-driven report is next. |
+| Findings / issues + annotations | Pro | **planned** | Next milestone; central findings list + per-request notes/colours. |
+| Workflows / rules engine | Pro | **planned** | Passive/active rules (match → tag/colour/extract); sandboxed native-plugin runtime. |
 | REST API | Pro | **planned** | — |
 
 ## Explicit non-goals

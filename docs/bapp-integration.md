@@ -1,4 +1,11 @@
-# BApp Store integration — findings & plan (Phase A)
+# BApp Store integration
+
+> **Status: implemented.** The full public catalog is mirrored from GitHub
+> (cache-first), one-click install resolves a release package, a committed jar,
+> or a Python source entry point, and extensions run in Shrike's own JVM host
+> (Java via the Montoya API, Python via Jython + the legacy Extender API).
+> Installs are quarantined and never executed until an explicit Run. The notes
+> below are the original design findings that led here.
 
 Status: **desk analysis**. Items marked (verify) must be confirmed against the live
 official pages before any adapter is built. This project never bypasses any vendor

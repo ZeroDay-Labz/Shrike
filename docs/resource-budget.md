@@ -18,8 +18,10 @@ Idle:
 
 Memory:
 - Bounded channels/queues and configurable concurrency for plugin work.
-- Stream large HTTP bodies and downloads; `max_capture_bytes` caps retained bodies;
-  response-body retention becomes per-project configurable.
+- **Streaming, memory-bounded body capture** (implemented): the sender reads
+  responses frame-by-frame and retains at most `max_capture_bytes` while counting
+  the true length; the proxy buffers up to a 64 MiB ceiling. A large response can
+  no longer balloon memory before truncation. History retention caps total growth.
 - Paginate history (`history_page`); never load the whole project DB into memory.
 - Avoid body cloning; share immutable `Bytes`. Planned content-addressed body
   store dedupes identical bodies.
