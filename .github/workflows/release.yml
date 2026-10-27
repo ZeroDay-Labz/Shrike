@@ -64,7 +64,7 @@ jobs:
 
       - name: Build the headless CLI (Linux)
         if: runner.os == 'Linux'
-        run: cargo build --release -p shrike
+        run: cargo build --release --bin shrike
 
       - name: Portable tarball (Linux)
         if: runner.os == 'Linux'
