@@ -1,7 +1,7 @@
 {
   "name": "shrike",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shrike — clean-room web security testing suite",
   "scripts": {
     "dev": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 ui/node_modules/.bin/tauri dev",
