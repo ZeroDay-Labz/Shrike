@@ -126,10 +126,17 @@ struct ConfigView {
     github_token: String,
     #[serde(default = "default_true")]
     intruder_require_scope: bool,
+    #[serde(default = "default_timeout_ms")]
+    request_timeout_ms: u64,
+    #[serde(default)]
+    history_max_rows: usize,
 }
 
 fn default_true() -> bool {
     true
+}
+fn default_timeout_ms() -> u64 {
+    30_000
 }
 
 impl ConfigView {
@@ -144,6 +151,8 @@ impl ConfigView {
             chromium_path: c.chromium_path.clone().unwrap_or_default(),
             github_token: c.github_token.clone(),
             intruder_require_scope: c.intruder_require_scope,
+            request_timeout_ms: c.request_timeout_ms,
+            history_max_rows: c.history_max_rows,
         }
     }
     fn apply_to(&self, base: &ProxyConfig) -> Result<ProxyConfig, String> {
@@ -172,6 +181,8 @@ impl ConfigView {
             },
             github_token: self.github_token.trim().to_string(),
             intruder_require_scope: self.intruder_require_scope,
+            request_timeout_ms: self.request_timeout_ms.clamp(1_000, 600_000),
+            history_max_rows: self.history_max_rows,
         })
     }
 }

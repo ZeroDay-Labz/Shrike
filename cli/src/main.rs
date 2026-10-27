@@ -218,6 +218,8 @@ fn run(data_dir: PathBuf, args: RunArgs) -> Result<()> {
         chromium_path: None,
         github_token: String::new(),
         intruder_require_scope: true,
+        request_timeout_ms: 30_000,
+        history_max_rows: 0,
     };
 
     let (ca, created) = CaManager::load_or_create(&config.ca_dir())?;

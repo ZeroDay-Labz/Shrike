@@ -79,6 +79,8 @@ export interface ConfigView {
   chromium_path: string;
   github_token: string;
   intruder_require_scope: boolean;
+  request_timeout_ms: number;
+  history_max_rows: number;
 }
 
 export interface BrowserStatus {

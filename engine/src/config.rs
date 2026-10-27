@@ -41,6 +41,12 @@ pub struct ProxyConfig {
     /// the configured target scope — scope is an enforcement boundary for
     /// automated tools, not just a UI filter.
     pub intruder_require_scope: bool,
+    /// Total deadline for a manual/Intruder request (connect + response read),
+    /// in milliseconds. Bounds a hung upstream so Stop is always responsive.
+    pub request_timeout_ms: u64,
+    /// History retention: keep at most this many newest transactions (0 =
+    /// unlimited). Bounds unbounded project growth for long sessions.
+    pub history_max_rows: usize,
 }
 
 impl ProxyConfig {
@@ -81,6 +87,8 @@ impl Default for ProxyConfig {
             chromium_path: None,
             github_token: String::new(),
             intruder_require_scope: true,
+            request_timeout_ms: 30_000,
+            history_max_rows: 0,
         }
     }
 }

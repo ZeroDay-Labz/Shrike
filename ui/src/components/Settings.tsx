@@ -12,6 +12,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
   const [chromiumPath, setChromiumPath] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [requireScope, setRequireScope] = useState(true);
+  const [timeoutMs, setTimeoutMs] = useState(30000);
+  const [historyMax, setHistoryMax] = useState(0);
   const [msg, setMsg] = useState("");
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
@@ -26,6 +28,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       setChromiumPath(props.config.chromium_path ?? "");
       setGithubToken(props.config.github_token ?? "");
       setRequireScope(props.config.intruder_require_scope ?? true);
+      setTimeoutMs(props.config.request_timeout_ms ?? 30000);
+      setHistoryMax(props.config.history_max_rows ?? 0);
     }
   }, [props.config]);
 
@@ -42,6 +46,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         chromium_path: chromiumPath.trim(),
         github_token: githubToken.trim(),
         intruder_require_scope: requireScope,
+        request_timeout_ms: timeoutMs,
+        history_max_rows: historyMax,
       };
       const saved = await api.configSet(next);
       props.onSaved(saved);
@@ -90,6 +96,14 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       <label>GitHub token for the BApp Store (optional)
         <input type="password" value={githubToken} placeholder="lifts GitHub's 60-requests/hour limit when browsing/installing"
           onChange={(e) => setGithubToken(e.target.value)} />
+      </label>
+      <label>Request timeout (ms) — Repeater &amp; Intruder
+        <input value={timeoutMs} inputMode="numeric"
+          onChange={(e) => setTimeoutMs(Math.max(1000, Number(e.target.value) || 30000))} />
+      </label>
+      <label>History retention — keep newest N requests (0 = unlimited)
+        <input value={historyMax} inputMode="numeric"
+          onChange={(e) => setHistoryMax(Math.max(0, Number(e.target.value) || 0))} />
       </label>
       <div className="row">
         <button className="btn start" onClick={save}>Save</button>

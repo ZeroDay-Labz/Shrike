@@ -177,6 +177,9 @@ pub struct Store {
     read: Mutex<Connection>,
     tx: mpsc::Sender<WriteMsg>,
     path: PathBuf,
+    /// Retention cap: keep at most this many newest transactions (0 = unlimited).
+    /// Read by the writer thread; set at startup and on config change.
+    max_rows: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Store {
@@ -202,16 +205,53 @@ impl Store {
 
         let (tx, rx) = mpsc::channel::<WriteMsg>();
         let writer_path = path.clone();
+        let max_rows = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let writer_max = Arc::clone(&max_rows);
         std::thread::Builder::new()
             .name("shrike-store-writer".into())
-            .spawn(move || writer_loop(writer_path, rx))
+            .spawn(move || writer_loop(writer_path, rx, writer_max))
             .context("spawning store writer")?;
 
         Ok(Self {
             read: Mutex::new(read),
             tx,
             path,
+            max_rows,
         })
+    }
+
+    /// Set the history retention cap (newest-N transactions; 0 = unlimited). The
+    /// writer prunes periodically, so this takes effect as new traffic arrives.
+    pub fn set_max_rows(&self, max: usize) {
+        self.max_rows
+            .store(max, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Enforce the retention cap immediately (keep the newest N transactions).
+    /// Returns how many rows were deleted. No-op when the cap is 0 (unlimited).
+    pub fn prune_history(&self) -> Result<usize> {
+        let max = self.max_rows.load(std::sync::atomic::Ordering::Relaxed);
+        if max == 0 {
+            return Ok(0);
+        }
+        let conn = self.read.lock().expect("store read lock");
+        // Keep the newest `max`: the oldest row to keep is at OFFSET max-1;
+        // delete everything strictly older than it.
+        let n = conn.execute(
+            "DELETE FROM transactions WHERE id < \
+             (SELECT id FROM transactions ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+            [(max - 1) as i64],
+        )?;
+        Ok(n)
+    }
+
+    /// Current on-disk size of the database file (bytes), including the WAL.
+    pub fn db_size_bytes(&self) -> u64 {
+        let base = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let wal = std::fs::metadata(self.path.with_extension("sqlite-wal"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        base + wal
     }
 
     /// Path to the backing database file.
@@ -551,7 +591,11 @@ fn summary_from_view(v: &TransactionView) -> TransactionSummary {
     }
 }
 
-fn writer_loop(path: PathBuf, rx: mpsc::Receiver<WriteMsg>) {
+fn writer_loop(
+    path: PathBuf,
+    rx: mpsc::Receiver<WriteMsg>,
+    max_rows: Arc<std::sync::atomic::AtomicUsize>,
+) {
     let conn = match Connection::open(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -561,9 +605,26 @@ fn writer_loop(path: PathBuf, rx: mpsc::Receiver<WriteMsg>) {
     };
     conn.pragma_update(None, "busy_timeout", 5000).ok();
 
+    let mut since_prune = 0u32;
     while let Ok(msg) = rx.recv() {
         let res = match msg {
-            WriteMsg::Completed(tx) => insert_transaction(&conn, &tx),
+            WriteMsg::Completed(tx) => {
+                let r = insert_transaction(&conn, &tx);
+                since_prune += 1;
+                // Periodically enforce the retention cap: keep the newest N by id.
+                let max = max_rows.load(std::sync::atomic::Ordering::Relaxed);
+                if max > 0 && since_prune >= 500 {
+                    since_prune = 0;
+                    if let Err(e) = conn.execute(
+                        "DELETE FROM transactions WHERE id < \
+                         (SELECT id FROM transactions ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+                        [(max.max(1) - 1) as i64],
+                    ) {
+                        warn!(error = %e, "history retention prune failed");
+                    }
+                }
+                r
+            }
             WriteMsg::Ws(ws, at_ms) => insert_ws(&conn, &ws, at_ms),
             WriteMsg::Flush(ack) => {
                 let _ = ack.send(());
@@ -684,6 +745,37 @@ mod tests {
             error: None,
             duration: Duration::from_millis(42),
         }
+    }
+
+    #[test]
+    fn retention_prunes_to_the_newest_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let mut sink = store.sink();
+        for i in 1..=10u64 {
+            sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+                i,
+                "h.example",
+                "GET",
+                200,
+                b"{}",
+            ))));
+        }
+        store.flush().unwrap();
+        assert_eq!(store.count(&HistoryFilter::default()).unwrap(), 10);
+
+        store.set_max_rows(4);
+        let deleted = store.prune_history().unwrap();
+        assert_eq!(deleted, 6, "the 6 oldest rows are pruned");
+        assert_eq!(store.count(&HistoryFilter::default()).unwrap(), 4);
+
+        // The survivors are the newest ids (7..=10).
+        let rows = store
+            .history_page(&HistoryFilter::default(), 50, 0)
+            .unwrap();
+        let mut ids: Vec<u64> = rows.iter().map(|r| r.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![7, 8, 9, 10]);
     }
 
     #[test]

@@ -225,10 +225,15 @@ impl Engine {
         }
         let store_path = config.data_dir.join("projects").join("default.sqlite");
         let store = Arc::new(Store::open(&store_path)?);
+        store.set_max_rows(config.history_max_rows);
         let scope = Arc::new(RwLock::new(load_scope(&store)));
         let match_replace = Arc::new(RwLock::new(load_match_replace(&store)));
         let plugins = RwLock::new(load_plugins(&store));
-        let sender = Arc::new(Sender::new(config.upstream_tls, config.max_capture_bytes)?);
+        let sender = Arc::new(Sender::new(
+            config.upstream_tls,
+            config.max_capture_bytes,
+            std::time::Duration::from_millis(config.request_timeout_ms),
+        )?);
 
         let engine = Arc::new(Self {
             runtime,
@@ -405,11 +410,17 @@ impl Engine {
     /// proxy is running it is restarted so listener/TLS/passthrough changes apply.
     pub fn set_config(&self, config: ProxyConfig) -> Result<()> {
         let was_running = self.local_addr().is_some();
-        let (mode, max) = (config.upstream_tls, config.max_capture_bytes);
+        let (mode, max, timeout) = (
+            config.upstream_tls,
+            config.max_capture_bytes,
+            std::time::Duration::from_millis(config.request_timeout_ms),
+        );
+        let max_rows = config.history_max_rows;
         *self.config.write().expect("config lock") = config;
-        if let Ok(sender) = Sender::new(mode, max) {
+        if let Ok(sender) = Sender::new(mode, max, timeout) {
             *self.sender.write().expect("sender lock") = Arc::new(sender);
         }
+        self.store.set_max_rows(max_rows);
         if was_running {
             self.stop_proxy()?;
             self.start_proxy()?;
@@ -1285,6 +1296,8 @@ mod tests {
             chromium_path: None,
             github_token: String::new(),
             intruder_require_scope: true,
+            request_timeout_ms: 30_000,
+            history_max_rows: 0,
         }
     }
 

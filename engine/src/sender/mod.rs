@@ -18,7 +18,10 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use serde::{Deserialize, Serialize};
-use std::{str::FromStr, time::Instant};
+use std::{
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
 /// A request to send, as the Repeater editor describes it.
 #[derive(Debug, Clone, Deserialize)]
@@ -49,13 +52,19 @@ fn is_managed(name: &str) -> bool {
     )
 }
 
+/// Hard ceiling on how many body bytes we drain before giving up on measuring
+/// the true length — stops an endless stream from wasting time/bandwidth even
+/// though memory is already bounded by `max_capture`.
+const DRAIN_CEILING: usize = 256 * 1024 * 1024;
+
 pub struct Sender {
     client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     max_capture: usize,
+    timeout: Duration,
 }
 
 impl Sender {
-    pub fn new(mode: UpstreamTlsMode, max_capture: usize) -> Result<Self> {
+    pub fn new(mode: UpstreamTlsMode, max_capture: usize, timeout: Duration) -> Result<Self> {
         let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
         let tls = proxy::client_tls_config(mode, provider)?;
         let connector = proxy::https_connector(tls);
@@ -63,10 +72,19 @@ impl Sender {
         Ok(Self {
             client,
             max_capture,
+            timeout,
         })
     }
 
     pub async fn send(&self, spec: RequestSpec) -> Result<SendResult> {
+        tokio::time::timeout(self.timeout, self.send_inner(spec))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("request timed out after {} ms", self.timeout.as_millis())
+            })?
+    }
+
+    async fn send_inner(&self, spec: RequestSpec) -> Result<SendResult> {
         let method = Method::from_str(spec.method.trim())
             .with_context(|| format!("invalid method {:?}", spec.method))?;
         let uri_str = format!("{}{}", spec.service.origin(), spec.target);
@@ -90,19 +108,36 @@ impl Sender {
             .with_context(|| format!("sending request to {}", spec.service.origin()))?;
         let duration_ms = started.elapsed().as_millis() as u64;
 
-        let (parts, incoming) = response.into_parts();
-        let full = incoming
-            .collect()
-            .await
-            .context("reading response body")?
-            .to_bytes();
-        let wire_len = full.len();
-        let (retained, complete) = if wire_len > self.max_capture {
-            (full.slice(..self.max_capture), false)
-        } else {
-            (full, true)
-        };
-        let captured = CapturedResponse::from_parts(&parts, retained, wire_len, complete);
+        let (parts, mut incoming) = response.into_parts();
+
+        // Stream frames: retain at most `max_capture` bytes (bounds memory) while
+        // still counting the true wire length; drop the rest. `complete=false`
+        // marks a truncated capture.
+        let mut retained: Vec<u8> = Vec::new();
+        let mut wire_len: usize = 0;
+        let mut complete = true;
+        while let Some(frame) = incoming.frame().await {
+            let frame = frame.context("reading response body")?;
+            let Some(chunk) = frame.data_ref() else {
+                continue; // trailers etc.
+            };
+            wire_len += chunk.len();
+            if retained.len() < self.max_capture {
+                let take = (self.max_capture - retained.len()).min(chunk.len());
+                retained.extend_from_slice(&chunk[..take]);
+                if take < chunk.len() {
+                    complete = false;
+                }
+            } else {
+                complete = false;
+            }
+            if wire_len >= DRAIN_CEILING {
+                complete = false;
+                break;
+            }
+        }
+        let captured =
+            CapturedResponse::from_parts(&parts, Bytes::from(retained), wire_len, complete);
         Ok(SendResult {
             response: ResponseView::from(&captured),
             duration_ms,
@@ -147,7 +182,12 @@ mod tests {
     #[tokio::test]
     async fn sends_and_reads_response() {
         let addr = echo_server().await;
-        let sender = Sender::new(UpstreamTlsMode::Verify, 1024 * 1024).unwrap();
+        let sender = Sender::new(
+            UpstreamTlsMode::Verify,
+            1024 * 1024,
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let spec = RequestSpec {
             service: HttpService {
                 host: "127.0.0.1".into(),
@@ -168,5 +208,74 @@ mod tests {
             out.response.body.text.as_deref(),
             Some("POST /hello body=ping")
         );
+    }
+
+    fn spec_to(addr: std::net::SocketAddr) -> RequestSpec {
+        RequestSpec {
+            service: HttpService {
+                host: "127.0.0.1".into(),
+                port: addr.port(),
+                secure: false,
+            },
+            method: "GET".into(),
+            target: "/".into(),
+            headers: vec![],
+            body: String::new(),
+        }
+    }
+
+    /// A chunked response with no Content-Length, larger than the capture cap:
+    /// memory is bounded to the cap, but the true wire length is still counted
+    /// and the capture is marked truncated.
+    #[tokio::test]
+    async fn streams_and_bounds_body_without_content_length() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf).await;
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            // 20 chunks of 1000 bytes = 20_000 bytes total, cap is 4096.
+            for _ in 0..20 {
+                s.write_all(b"3e8\r\n").await.unwrap();
+                s.write_all(&[b'A'; 1000]).await.unwrap();
+                s.write_all(b"\r\n").await.unwrap();
+            }
+            s.write_all(b"0\r\n\r\n").await.unwrap();
+            let _ = s.flush().await;
+        });
+
+        let sender = Sender::new(UpstreamTlsMode::Verify, 4096, Duration::from_secs(30)).unwrap();
+        let out = sender.send(spec_to(addr)).await.unwrap();
+        assert_eq!(out.response.body.wire_len, 20_000, "true length preserved");
+        assert!(!out.response.body.complete, "capture is marked truncated");
+        assert_eq!(
+            out.response.body.len, 4096,
+            "retained bytes bounded to the cap"
+        );
+    }
+
+    /// A server that accepts but never responds must not hang the sender past its
+    /// deadline — Stop/cancellation stays responsive.
+    #[tokio::test]
+    async fn request_times_out_against_a_hung_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_s, _) = listener.accept().await.unwrap();
+            // hold the connection open forever, never write a response
+            std::future::pending::<()>().await;
+        });
+
+        let sender =
+            Sender::new(UpstreamTlsMode::Verify, 4096, Duration::from_millis(300)).unwrap();
+        let start = Instant::now();
+        let res = sender.send(spec_to(addr)).await;
+        assert!(res.is_err(), "hung server must produce a timeout error");
+        assert!(start.elapsed() < Duration::from_secs(3), "returns promptly");
     }
 }

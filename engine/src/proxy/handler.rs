@@ -142,15 +142,43 @@ fn is_event_stream(headers: &header::HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-/// Buffer a body. Returns the bytes to forward plus (retained copy, wire length, complete).
-async fn buffer_body(body: Body, max: usize) -> Result<(Bytes, Bytes, usize, bool), String> {
-    let bytes = body.collect().await.map_err(|e| e.to_string())?.to_bytes();
-    let len = bytes.len();
-    if len > max {
-        Ok((bytes.clone(), bytes.slice(..max), len, false))
-    } else {
-        Ok((bytes.clone(), bytes, len, true))
+/// Hard ceiling on how much of a body without a declared `Content-Length` the
+/// proxy will buffer in memory. Responses with a declared length over the capture
+/// cap already stream through untouched; this bounds the chunked / no-length case
+/// so a single response can't consume unbounded memory. (A zero-copy tee that
+/// forwards past the ceiling while retaining only the head is the remaining step.)
+const PROXY_BUFFER_CEILING: usize = 64 * 1024 * 1024;
+
+/// Buffer a body a frame at a time, bounding peak memory to `PROXY_BUFFER_CEILING`.
+/// Returns the bytes to forward plus (retained copy up to `max`, wire length,
+/// complete). `complete` is false when the record was truncated — either beyond
+/// the capture cap, or because the body exceeded the buffering ceiling.
+async fn buffer_body(mut body: Body, max: usize) -> Result<(Bytes, Bytes, usize, bool), String> {
+    let ceiling = max.max(PROXY_BUFFER_CEILING);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut hit_ceiling = false;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| e.to_string())?;
+        let Some(data) = frame.data_ref() else {
+            continue;
+        };
+        if buf.len() + data.len() > ceiling {
+            let take = ceiling - buf.len();
+            buf.extend_from_slice(&data[..take]);
+            hit_ceiling = true;
+            break;
+        }
+        buf.extend_from_slice(data);
     }
+    let forward = Bytes::from(buf);
+    let len = forward.len();
+    let retained = if len > max {
+        forward.slice(..max)
+    } else {
+        forward.clone()
+    };
+    let complete = len <= max && !hit_ceiling;
+    Ok((forward, retained, len, complete))
 }
 
 /// Rebuild `parts` in place from a user's intercept edit, keeping the original

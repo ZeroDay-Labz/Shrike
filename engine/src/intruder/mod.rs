@@ -472,8 +472,21 @@ pub async fn run(
         });
     }
 
-    while set.join_next().await.is_some() {
-        completed += 1;
+    // Drain, but if Stop is pressed, abort outstanding requests so cancellation
+    // is immediate even against a server that holds the connection open.
+    while !set.is_empty() {
+        if stop.load(Ordering::Relaxed) {
+            set.abort_all();
+            while set.join_next().await.is_some() {}
+            break;
+        }
+        tokio::select! {
+            res = set.join_next() => match res {
+                Some(r) => { if r.is_ok() { completed += 1; } }
+                None => break,
+            },
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
     }
     // Close the channel so the collector flushes its remainder and finishes.
     drop(tx);
