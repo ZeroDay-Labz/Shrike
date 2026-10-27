@@ -45,8 +45,11 @@ your `PATH`. The **Addons ▸ Store & installed** tab sets up the host and Jytho
 ## What it does
 
 * **Proxy** — a real HTTPS MITM with its own CA, per-host leaf certificates, HTTP/1.1 + HTTP/2 and
-  WebSockets. Passive request-focused history, scope rules enforced in the core, match & replace, and
-  **Intercept** with forward / drop / forward-all.
+  WebSockets. Passive request-focused history, scope rules enforced in the core (for the proxy **and**
+  Intruder), match & replace, and **Intercept** with forward / drop / forward-all. Response capture is
+  streaming and memory-bounded.
+* **Query language** — filter history with the Shrike Query Language, e.g.
+  `host:example.com code>=400 method:POST`, compiled to safe parameterised SQL.
 * **Integrated browser** — a bundled Chromium (or your system one) launched pre-configured for the
   proxy and already trusting Shrike's CA. No FoxyProxy, no manual certificate import.
 * **Target** — site map, and pick a host as the engagement scope.

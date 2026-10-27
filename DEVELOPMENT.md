@@ -44,11 +44,16 @@ cargo cli -- ca info             # CA path + SHA-256 fingerprint
 cargo cli -- ca trust            # trust the CA in local Firefox/Chrome profiles
 ```
 
-## Browser setup (FoxyProxy) and trusting the CA
+## Browser setup and trusting the CA
 
-1. **Point the browser at Shrike.** In FoxyProxy add a proxy: type HTTP, host `127.0.0.1`,
-   port `8080` (or whatever Shrike's Start shows), and enable it for all URLs. Any browser works;
-   Shrike is a plain HTTP(S) proxy.
+**Easiest: the integrated browser.** In the GUI, Start the proxy and click **Browser** —
+Shrike launches a bundled (or system) Chromium already pointed at the proxy and already
+trusting the CA (via an SPKI allow-list), in an isolated profile. No FoxyProxy, no manual
+certificate import. The steps below are only for using your *own* external browser.
+
+1. **Point the browser at Shrike.** Add an HTTP proxy: host `127.0.0.1`, port `8080`
+   (or whatever Shrike's Start shows), enabled for all URLs. Any browser works; Shrike
+   is a plain HTTP(S) proxy.
 2. **Trust the CA once** (already done on this box for Chrome/Firefox/Thunderbird):
    ```sh
    cargo cli -- ca trust            # imports into local Firefox/Chrome/Thunderbird NSS stores
@@ -92,20 +97,29 @@ HTTP history live.
 
 ## Tests
 ```sh
-cargo test                   # whole workspace: engine unit + e2e (37 tests today)
+cargo test                   # whole workspace: engine unit + e2e (130+ engine lib + 8 e2e)
 cargo test -p shrike-engine  # engine only
 cargo test -p shrike-engine --lib store   # one module
+cargo clippy --workspace --all-targets -- -D warnings   # lint (CI gate)
 npm --prefix ui run build    # type-check + bundle the frontend (tsc + vite)
 ```
+
+Point Shrike at a throwaway project with `SHRIKE_DATA_DIR=/tmp/shrike-dev` (CA, history
+and settings live there) — handy for tests, demos and screenshots.
 
 ## Build release artifacts (packaging)
 ```sh
 npm run build                # Tauri bundles for THIS host:
                              #   Linux  -> AppImage + .rpm
                              #   Windows-> NSIS .exe installer
+scripts/package-tarball.sh   # portable Linux .tar.gz (GUI + CLI + resources)
 ```
-Planned additionally for M8 (not wired yet): a `.tar.gz` of the binary + a Flatpak
-(`flatpak-builder` manifest). Windows artifacts build on a Windows CI runner.
+Releases are automated: pushing a `v*` tag runs `.github/workflows/release.yml`, which
+builds the `.rpm`, AppImage, portable `.tar.gz` (Linux), the NSIS `.exe` (Windows runner)
+and a `.flatpak` (from the tarball via `packaging/flatpak/`), and attaches them to the
+GitHub release. Re-run against an existing tag with
+`gh workflow run release.yml -f tag=vX.Y.Z`. Optional self-contained bundles:
+`scripts/fetch-jvm.sh` (JVM host jars + jlink runtime) and `scripts/fetch-chromium.sh`.
 
 ## Where things live
 | What | Path |
