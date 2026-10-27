@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/proxy.png" alt="Shrike's Proxy tab: captured HTTPS history with a selected request shown below" width="820">
+  <img src="assets/shrike-concept.png" alt="Shrike — a mechanical shrike driving its crystal beak into a HUD target" width="560">
 </p>
 
 Shrike is developed by [ZeroDay-Labz](https://github.com/ZeroDay-Labz) and licensed under MIT.
