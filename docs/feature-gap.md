@@ -16,7 +16,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Decoder | CE | **done** | url/base64/hex/html/case chains. |
 | Sequencer | CE | **partial** | Entropy + shape stats; not a full FIPS battery. |
 | Comparer | CE | **done** | Word/char LCS diff. |
-| Target scope & exclusions | CE | **done** | Enforced in core; include/exclude, regex. |
+| Target scope & exclusions | CE | **done** | Enforced in core for proxy **and Intruder** (out-of-scope requests blocked, never sent); include/exclude, regex. |
 | Site map | CE | **partial** | Built from history; no active crawl yet. |
 
 ## Projects & persistence (spec priority #1)
@@ -40,12 +40,12 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Capability | Commercial Pro tier | Shrike | Notes |
 | --- | --- | --- | --- |
 | Intruder (unthrottled, §-positions) | Pro | **done** | 4 attack types; payload processing; generators (numbers/brute/case/null). |
-| Global project search | Pro | **planned** | History LIKE filters exist; full search planned. |
-| Advanced history filters | Pro | **partial** | host/method/status/search/errors; more planned. |
+| Global project search | Pro | **partial** | Shrike Query Language (`engine/src/query`): host/method/code/url/path/mime/port/len/body, AND/OR/NOT, compiled to parameterised SQL. Cross-tool unification planned. |
+| Advanced history filters | Pro | **done** | Basic host/method/status/errors filters + the query language in the Proxy bar. |
 | Active scanner + issues | Pro | **planned** | Not started; passive checks need captured responses. |
 | Crawler | Pro | **planned** | — |
 | Out-of-band (Collaborator-style) | Pro | **planned** | Opt-in, user-configured; not started. |
-| Extensibility / plugin API | Pro | **partial** | Manifest registry + permissions/hooks; execution runtime planned. |
+| Extensibility / plugin API | Pro | **partial** | Manifest registry + permissions/hooks; BApps run in a JVM host (Java/Montoya + Python/Jython). Installs are quarantined and never executed until an explicit Run. Native sandboxed execution runtime planned. |
 | BApp store integration | Pro | **planned** | See [bapp-integration.md](bapp-integration.md). |
 | Reporting (HTML/XML/JSON) | Pro | **planned** | Backup/export exists at DB level. |
 | REST API | Pro | **planned** | — |
