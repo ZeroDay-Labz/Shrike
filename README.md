@@ -124,6 +124,12 @@ an out-of-band interaction service, the native plugin API around suite tabs / ed
 menus / engine hooks, and native ports of the most valuable extensions. Status and gaps are tracked
 in [docs/feature-gap.md](docs/feature-gap.md).
 
+## Concept art
+
+<p align="center">
+  <img src="assets/shrike-banner.jpg" alt="Shrike concept art: the mechanical shrike over a HUD target, beside the suite's headline features" width="900">
+</p>
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Use it only against systems you are authorised to test.

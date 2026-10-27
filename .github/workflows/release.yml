@@ -13,6 +13,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build and attach assets to, e.g. v0.2.0"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -71,8 +76,9 @@ jobs:
 
       - name: Publish to the GitHub release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             target/release/bundle/rpm/*.rpm
@@ -99,7 +105,8 @@ jobs:
         run: |
           TARBALL=$(ls dist/*.tar.gz | head -1)
           SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
-          sed -i "s#__TARBALL_PATH__#$TARBALL#; s#__TARBALL_SHA256__#$SHA#" \
+          # flatpak-builder resolves `path:` relative to the manifest's directory.
+          sed -i "s#__TARBALL_PATH__#../../$TARBALL#; s#__TARBALL_SHA256__#$SHA#" \
             packaging/flatpak/com.zerodaylabz.shrike.yml
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
@@ -111,6 +118,7 @@ jobs:
 
       - name: Publish flatpak to the GitHub release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: shrike.flatpak
