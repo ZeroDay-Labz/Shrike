@@ -562,6 +562,23 @@ impl Engine {
         self.store.history_get(id)
     }
 
+    /// A page of history matching a Shrike-query string (see `crate::query`).
+    /// An invalid query returns a descriptive error for the UI to show.
+    pub fn history_query(
+        &self,
+        query: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<TransactionSummary>> {
+        let (clause, params) = crate::query::compile(query).map_err(|e| anyhow!(e))?;
+        self.store.query_page(&clause, params, limit, offset)
+    }
+
+    pub fn history_query_count(&self, query: &str) -> Result<u64> {
+        let (clause, params) = crate::query::compile(query).map_err(|e| anyhow!(e))?;
+        self.store.query_count(&clause, params)
+    }
+
     /// Distinct endpoints (host + path) seen in history, for the Target site map.
     pub fn site_map(&self) -> Result<Vec<SiteNode>> {
         self.store.site_map()

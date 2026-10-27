@@ -18,6 +18,7 @@ pub mod jvm;
 pub mod match_replace;
 pub mod plugins;
 pub mod proxy;
+pub mod query;
 pub mod scope;
 pub mod sender;
 pub mod store;

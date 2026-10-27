@@ -14,6 +14,9 @@ export const api = {
   historyPage: (filter: HistoryFilter, limit: number, offset: number) =>
     invoke<TransactionSummary[]>("history_page", { filter, limit, offset }),
   historyCount: (filter: HistoryFilter) => invoke<number>("history_count", { filter }),
+  historyQuery: (query: string, limit: number, offset: number) =>
+    invoke<TransactionSummary[]>("history_query", { query, limit, offset }),
+  historyQueryCount: (query: string) => invoke<number>("history_query_count", { query }),
   historyGet: (id: number) => invoke<TransactionView | null>("history_get", { id }),
   historyClear: () => invoke<void>("history_clear"),
   siteMap: () => invoke<SiteNode[]>("site_map"),

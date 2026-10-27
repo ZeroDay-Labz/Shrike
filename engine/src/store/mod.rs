@@ -294,6 +294,43 @@ impl Store {
             .collect())
     }
 
+    /// A page matching a compiled Shrike-query clause (an SQL boolean body with
+    /// `?` placeholders, from `crate::query::compile`) and its bound values.
+    pub fn query_page(
+        &self,
+        clause: &str,
+        params: Vec<Value>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<TransactionSummary>> {
+        let sql = format!(
+            "SELECT view_json FROM transactions WHERE {clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+        );
+        let conn = self.read.lock().expect("store read lock");
+        let mut stmt = conn.prepare(&sql)?;
+        let mut bound = params;
+        bound.push(Value::Integer(limit as i64));
+        bound.push(Value::Integer(offset as i64));
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(bound), |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|json| serde_json::from_str::<TransactionView>(&json).ok())
+            .map(|v| summary_from_view(&v))
+            .collect())
+    }
+
+    /// Count of rows matching a compiled Shrike-query clause.
+    pub fn query_count(&self, clause: &str, params: Vec<Value>) -> Result<u64> {
+        let sql = format!("SELECT COUNT(*) FROM transactions WHERE {clause}");
+        let conn = self.read.lock().expect("store read lock");
+        let n: i64 = conn.query_row(&sql, rusqlite::params_from_iter(params), |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
     /// Count of rows matching `filter`.
     pub fn count(&self, filter: &HistoryFilter) -> Result<u64> {
         let (where_sql, values) = build_where(filter);
@@ -745,6 +782,47 @@ mod tests {
             error: None,
             duration: Duration::from_millis(42),
         }
+    }
+
+    #[test]
+    fn query_language_filters_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let mut sink = store.sink();
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            1,
+            "a.example",
+            "GET",
+            200,
+            b"{}",
+        ))));
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            2,
+            "b.example",
+            "POST",
+            404,
+            b"{}",
+        ))));
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            3,
+            "a.example",
+            "POST",
+            500,
+            b"{}",
+        ))));
+        store.flush().unwrap();
+
+        let run = |q: &str| {
+            let (clause, params) = crate::query::compile(q).unwrap();
+            store.query_count(&clause, params).unwrap()
+        };
+        assert_eq!(run("host:a.example"), 2);
+        assert_eq!(run("method:POST"), 2);
+        assert_eq!(run("host:a.example method:POST"), 1); // implicit AND
+        assert_eq!(run("code>=400"), 2);
+        assert_eq!(run("method:GET OR code:500"), 2);
+        assert_eq!(run("NOT method:POST"), 1);
+        assert_eq!(run(""), 3); // empty matches all
     }
 
     #[test]

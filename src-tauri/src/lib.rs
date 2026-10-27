@@ -265,6 +265,24 @@ fn history_count(state: State<AppState>, filter: HistoryFilter) -> CmdResult<u64
 }
 
 #[tauri::command]
+fn history_query(
+    state: State<AppState>,
+    query: String,
+    limit: u32,
+    offset: u32,
+) -> CmdResult<Vec<TransactionSummary>> {
+    state
+        .engine
+        .history_query(&query, limit, offset)
+        .map_err(err)
+}
+
+#[tauri::command]
+fn history_query_count(state: State<AppState>, query: String) -> CmdResult<u64> {
+    state.engine.history_query_count(&query).map_err(err)
+}
+
+#[tauri::command]
 fn history_get(state: State<AppState>, id: u64) -> CmdResult<Option<TransactionView>> {
     state.engine.history_get(id).map_err(err)
 }
@@ -922,6 +940,8 @@ pub fn run() {
             config_set,
             history_page,
             history_count,
+            history_query,
+            history_query_count,
             history_get,
             history_clear,
             site_map,

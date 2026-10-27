@@ -279,6 +279,9 @@ option, optgroup { background: var(--surface-1); color: var(--fg); }
 /* ---- filter bar / tabs --------------------------------------------------- */
 .filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   border-bottom: 1px solid var(--line); background: var(--surface-2); flex-wrap: wrap; }
+.filterbar .hql { flex: 1 1 320px; min-width: 240px; font-family: var(--mono); font-size: 12px; }
+.filterbar .hql.err { border-color: var(--danger); }
+.filterbar .query-err { color: var(--danger); font-size: 12px; }
 .tabs { display: flex; gap: 3px; margin-right: 6px; background: var(--field); padding: 3px; border-radius: var(--r); border: 1px solid var(--line); }
 .tabs button { background: none; border: 1px solid transparent; color: var(--mut);
   padding: 4px 11px; border-radius: 6px; cursor: pointer; font-weight: 500; transition: background .12s, color .12s; }

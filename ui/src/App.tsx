@@ -93,7 +93,10 @@ export default function App() {
     try { return localStorage.getItem("shrike.rail") === "1"; } catch { return false; }
   });
   const nextRepId = useRef(1);
+  const queryReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [query, setQuery] = useState("");
+  const [queryErr, setQueryErr] = useState("");
   const filterRef = useRef(filter);
   filterRef.current = filter;
 
@@ -148,9 +151,18 @@ export default function App() {
     refreshExtMeta();
   }, [refreshExtMeta]);
 
-  const reload = useCallback(async (f: HistoryFilter) => {
-    const page = await api.historyPage(f, 1000, 0);
-    setRows(page);
+  const queryRef = useRef("");
+  queryRef.current = query;
+
+  const reload = useCallback(async () => {
+    const q = queryRef.current.trim();
+    if (q) {
+      try { setRows(await api.historyQuery(q, MAX_ROWS, 0)); setQueryErr(""); }
+      catch (e) { setQueryErr(String(e)); }
+    } else {
+      setRows(await api.historyPage(filterRef.current, 1000, 0));
+      setQueryErr("");
+    }
   }, []);
 
   useEffect(() => {
@@ -173,11 +185,15 @@ export default function App() {
         }
       } catch { /* ignore malformed saved state */ }
       repLoadedRef.current = true;
-      await reload({});
+      await reload();
     })();
     const uns: Array<Promise<() => void>> = [
       events.onCompleted((t) => {
-        if (matches(t, filterRef.current)) {
+        if (queryRef.current.trim()) {
+          // In query mode, re-run the query (debounced) so matches stay correct.
+          if (queryReloadTimer.current) clearTimeout(queryReloadTimer.current);
+          queryReloadTimer.current = setTimeout(() => { reload(); }, 600);
+        } else if (matches(t, filterRef.current)) {
           setRows((prev) => [t, ...prev.filter((r) => r.id !== t.id)].slice(0, MAX_ROWS));
         }
       }),
@@ -187,7 +203,11 @@ export default function App() {
     return () => { uns.forEach((p) => p.then((f) => f())); };
   }, [reload]);
 
-  useEffect(() => { reload(filter); }, [filter, reload]);
+  // Reload on filter change, or (debounced) as the query is typed.
+  useEffect(() => {
+    const id = setTimeout(() => { reload(); }, query ? 250 : 0);
+    return () => clearTimeout(id);
+  }, [filter, query, reload]);
 
   // Persist Repeater tabs to the project (debounced; request only, not responses).
   useEffect(() => {
@@ -379,7 +399,7 @@ export default function App() {
 
   const main = useMemo(() => {
     if (tool === "settings") {
-      return <Settings config={config} onSaved={setConfig} onImported={() => reload(filterRef.current)} />;
+      return <Settings config={config} onSaved={setConfig} onImported={() => reload()} />;
     }
     if (tool === "repeater") {
       return (
@@ -456,7 +476,8 @@ export default function App() {
             onDropAll={() => resolveAllHeld("drop")}
           />
         )}
-        <FilterBar filter={filter} setFilter={setFilter} count={count} tab={tab} setTab={setTab} wsCount={wsRows.length} />
+        <FilterBar filter={filter} setFilter={setFilter} count={count} tab={tab} setTab={setTab} wsCount={wsRows.length}
+          query={query} setQuery={setQuery} queryErr={queryErr} />
         {tab === "ws" ? (
           <div className="pane-fill"><WsTable rows={wsRows} /></div>
         ) : (
@@ -581,6 +602,9 @@ function FilterBar(props: {
   tab: "http" | "ws";
   setTab: (t: "http" | "ws") => void;
   wsCount: number;
+  query: string;
+  setQuery: (q: string) => void;
+  queryErr: string;
 }) {
   const { filter, setFilter } = props;
   return (
@@ -595,6 +619,15 @@ function FilterBar(props: {
       </div>
       {props.tab === "http" && (
         <>
+          <input
+            className={"hql" + (props.queryErr ? " err" : "")}
+            placeholder='query e.g. host:example.com code>=400 method:POST'
+            title={props.queryErr || "Shrike query: host: method: code: url: mime: body: port: — AND / OR / NOT, ( )"}
+            value={props.query}
+            onChange={(e) => props.setQuery(e.target.value)} />
+          {props.query
+            ? <button className="link" onClick={() => props.setQuery("")}>clear query</button>
+            : <>
           <input placeholder="filter host…" value={filter.host ?? ""}
             onChange={(e) => setFilter({ ...filter, host: e.target.value || null })} />
           <input placeholder="search URL…" value={filter.search ?? ""}
@@ -611,6 +644,9 @@ function FilterBar(props: {
             <input type="checkbox" checked={!!filter.only_errors}
               onChange={(e) => setFilter({ ...filter, only_errors: e.target.checked || null })} /> errors
           </label>
+              </>
+          }
+          {props.queryErr && <span className="query-err" title={props.queryErr}>⚠ query error</span>}
         </>
       )}
     </div>
