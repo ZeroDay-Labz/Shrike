@@ -24,8 +24,8 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 shrike-gui /app/bin/shrike-gui
-      - install -Dm755 shrike /app/bin/shrike
-      - mkdir -p /app/share/shrike && cp -r resources /app/share/shrike/
+      - sh -c "test -f shrike && install -Dm755 shrike /app/bin/shrike || true"
+      - sh -c "test -d resources && mkdir -p /app/share/shrike && cp -r resources /app/share/shrike/ || true"
       - install -Dm644 com.zerodaylabz.shrike.desktop /app/share/applications/com.zerodaylabz.shrike.desktop
       - install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/com.zerodaylabz.shrike.png
     sources:

@@ -62,6 +62,10 @@ jobs:
       - name: Build bundles
         run: npm --prefix ui exec -- tauri build --bundles ${{ matrix.targets }}
 
+      - name: Build the headless CLI (Linux)
+        if: runner.os == 'Linux'
+        run: cargo build --release -p shrike
+
       - name: Portable tarball (Linux)
         if: runner.os == 'Linux'
         run: bash scripts/package-tarball.sh
