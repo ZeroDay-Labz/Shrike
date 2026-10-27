@@ -252,7 +252,13 @@ fn intruder_sniper_runs_against_local_server() {
         delay_ms: 0,
         processors: vec![],
     };
-    let _id = engine.intruder_start(config, sink);
+    // 127.0.0.1 must be in scope now that Intruder enforces it by default.
+    engine
+        .set_scope(vec![shrike_engine::scope::ScopeRule::include_host(
+            "127.0.0.1",
+        )])
+        .unwrap();
+    let _id = engine.intruder_start(config, sink).unwrap();
 
     let mut total = 0u64;
     let mut results = 0u64;
@@ -292,4 +298,82 @@ fn intruder_sniper_runs_against_local_server() {
         ok_statuses, 3,
         "all three payloads got a 200 from the echo server"
     );
+}
+
+#[test]
+fn intruder_refuses_empty_scope_and_blocks_out_of_scope() {
+    use std::sync::{Arc, mpsc};
+    let helper = Runtime::new().unwrap();
+    let up = helper.block_on(spawn_upstream());
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+
+    let make_config = || IntruderConfig {
+        service: HttpService {
+            host: "127.0.0.1".into(),
+            port: up.port(),
+            secure: false,
+        },
+        template: format!(
+            "GET /q?v=\u{00a7}base\u{00a7} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            up.port()
+        ),
+        attack: AttackType::Sniper,
+        payload_sets: vec![vec!["1".into(), "2".into()]],
+        concurrency: 2,
+        delay_ms: 0,
+        processors: vec![],
+    };
+    let noop: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(|_| {});
+
+    // Empty scope + enforcement on (default) → the attack is refused outright.
+    assert!(
+        engine
+            .intruder_start(make_config(), Arc::clone(&noop))
+            .is_err(),
+        "empty scope must refuse an Intruder attack"
+    );
+
+    // Non-empty scope that does not cover the target → every request is blocked
+    // and the upstream is never contacted.
+    engine
+        .set_scope(vec![shrike_engine::scope::ScopeRule::include_host(
+            "example.com",
+        )])
+        .unwrap();
+    let (tx, rx) = mpsc::channel::<AttackEvent>();
+    let sink: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(move |ev| {
+        let _ = tx.send(ev);
+    });
+    engine.intruder_start(make_config(), sink).unwrap();
+
+    let mut blocked = 0u64;
+    let mut sent_ok = 0u64;
+    loop {
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("attack event")
+        {
+            AttackEvent::Results(batch) => {
+                for r in batch {
+                    if r.error.as_deref() == Some("blocked: out of target scope") {
+                        blocked += 1;
+                    } else if r.status.is_some() {
+                        sent_ok += 1;
+                    }
+                }
+            }
+            AttackEvent::Result(_) => {}
+            AttackEvent::Started { .. } => {}
+            AttackEvent::Done { .. } => break,
+        }
+    }
+    assert_eq!(blocked, 2, "both out-of-scope requests are blocked");
+    assert_eq!(sent_ok, 0, "nothing out of scope reaches the server");
 }

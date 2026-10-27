@@ -359,7 +359,23 @@ impl Engine {
         &self,
         config: IntruderConfig,
         sink: Arc<dyn Fn(AttackEvent) + Send + Sync>,
-    ) -> u64 {
+    ) -> Result<u64> {
+        // Scope is an enforcement boundary for automated tools. When required,
+        // reject an attack whose scope can't possibly admit anything (empty
+        // scope = nothing in scope), and enforce per-request inside `run`.
+        let require_scope = self.config().intruder_require_scope;
+        let scope = if require_scope {
+            if self.scope.read().expect("scope lock").is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty, so nothing is in scope — add an include rule in \
+                     Settings, or turn off \"require scope for Intruder\" there"
+                ));
+            }
+            Some(Arc::clone(&self.scope))
+        } else {
+            None
+        };
+
         let id = self.next_attack_id.fetch_add(1, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
         self.attacks
@@ -367,12 +383,10 @@ impl Engine {
             .expect("attacks lock")
             .insert(id, Arc::clone(&stop));
         let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
-        let attacks = self.runtime.handle().clone();
-        let _ = attacks; // keep handle type inference simple
         self.runtime.spawn(async move {
-            intruder::run(id, config, sender, sink, stop).await;
+            intruder::run(id, config, sender, sink, stop, scope).await;
         });
-        id
+        Ok(id)
     }
 
     /// Request cancellation of a running attack.
@@ -929,9 +943,10 @@ impl Engine {
             .unwrap_or_default())
     }
 
-    /// Install a downloaded extension: copy it into the managed BApp directory,
-    /// then (for Java packages) load it through the JVM host to capture its name,
-    /// registrations and log output. Deduped by SHA-256; persisted in the project.
+    /// Install a downloaded extension by **quarantining** it: copy it into the
+    /// managed BApp directory, hash and classify it, and record it as *not loaded*.
+    /// It is never executed here — a third-party extension is untrusted code, so
+    /// loading only happens on an explicit [`Engine::bapp_run`]. Deduped by SHA-256.
     pub fn bapp_install(&self, src: &str) -> Result<Vec<InstalledBapp>> {
         self.install_pkg(src, None)
     }
@@ -948,71 +963,32 @@ impl Engine {
         let dest = dir.join(format!("{short}.{ext}"));
         std::fs::copy(src, &dest).with_context(|| format!("copying into {}", dest.display()))?;
 
-        let is_python = inspection.format == "python";
-        let (name, status, registered, outputs, errors) =
-            if matches!(inspection.format.as_str(), "jar" | "bapp" | "python") {
-                match self.jvm_runtime() {
-                    // Python needs Jython + the legacy API; Java only needs the host.
-                    Some(rt) if is_python && rt.jython_jar.is_none() => (
-                        None,
-                        "Python extension needs Jython — click Install Jython in Extender"
-                            .to_string(),
-                        vec![],
-                        vec![],
-                        vec![],
-                    ),
-                    Some(rt) => match jvm::run_extension(
-                        &rt,
-                        &dest,
-                        "probe",
-                        std::time::Duration::from_secs(20),
-                    ) {
-                        Ok(load) if load.ok => (
-                            load.name,
-                            "loaded".to_string(),
-                            load.registered,
-                            load.outputs,
-                            load.errors,
-                        ),
-                        Ok(load) => (
-                            load.name,
-                            format!("load error: {}", load.error.unwrap_or_default()),
-                            load.registered,
-                            load.outputs,
-                            load.errors,
-                        ),
-                        Err(e) => (None, format!("failed to run: {e}"), vec![], vec![], vec![]),
-                    },
-                    None => (
-                        None,
-                        "Java runtime not set up — set it up in Extender to run this BApp"
-                            .to_string(),
-                        vec![],
-                        vec![],
-                        vec![],
-                    ),
+        // Classify only — no code runs at install time. The status tells the user
+        // what pressing Run will do; name/registrations are captured then.
+        let status = match inspection.format.as_str() {
+            "jar" | "bapp" => "installed — not loaded (press Run to load)".to_string(),
+            "python" => {
+                let jython = self.jvm_runtime().is_some_and(|rt| rt.jython_jar.is_some());
+                if jython {
+                    "installed — not loaded (Python/Jython; press Run)".to_string()
+                } else {
+                    "installed — needs Jython (Install Jython in Addons, then Run)".to_string()
                 }
-            } else {
-                (
-                    None,
-                    format!("unsupported format: {}", inspection.format),
-                    vec![],
-                    vec![],
-                    vec![],
-                )
-            };
+            }
+            other => format!("installed — unsupported format: {other}"),
+        };
 
         let record = InstalledBapp {
             sha256: inspection.sha256.clone(),
             filename: inspection.filename,
             path: dest.display().to_string(),
             format: inspection.format,
-            name,
-            enabled: status == "loaded",
+            name: None,
+            enabled: false,
             status,
-            registered,
-            outputs,
-            errors,
+            registered: vec![],
+            outputs: vec![],
+            errors: vec![],
             origin: origin.map(str::to_string),
         };
         let mut list = self.bapp_installed()?;
@@ -1081,9 +1057,20 @@ impl Engine {
             .into_iter()
             .find(|b| b.sha256 == sha256)
             .ok_or_else(|| anyhow!("no such installed BApp"))?;
+        if !matches!(record.format.as_str(), "jar" | "bapp" | "python") {
+            return Err(anyhow!(
+                "can't run a {} package in the JVM host",
+                record.format
+            ));
+        }
         let rt = self
             .jvm_runtime()
-            .ok_or_else(|| anyhow!("Java runtime not set up"))?;
+            .ok_or_else(|| anyhow!("Java runtime not set up — set it up in Addons first"))?;
+        if record.format == "python" && rt.jython_jar.is_none() {
+            return Err(anyhow!(
+                "this is a Python extension — click Install Jython in Addons first"
+            ));
+        }
 
         let state = Arc::new(Mutex::new(RunningBapp {
             sha256: sha256.to_string(),
@@ -1297,6 +1284,7 @@ mod tests {
             drop_out_of_scope: false,
             chromium_path: None,
             github_token: String::new(),
+            intruder_require_scope: true,
         }
     }
 

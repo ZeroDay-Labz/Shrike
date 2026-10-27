@@ -11,6 +11,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
   const [dropOutOfScope, setDropOutOfScope] = useState(false);
   const [chromiumPath, setChromiumPath] = useState("");
   const [githubToken, setGithubToken] = useState("");
+  const [requireScope, setRequireScope] = useState(true);
   const [msg, setMsg] = useState("");
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
@@ -24,6 +25,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       setDropOutOfScope(props.config.drop_out_of_scope);
       setChromiumPath(props.config.chromium_path ?? "");
       setGithubToken(props.config.github_token ?? "");
+      setRequireScope(props.config.intruder_require_scope ?? true);
     }
   }, [props.config]);
 
@@ -39,6 +41,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         drop_out_of_scope: dropOutOfScope,
         chromium_path: chromiumPath.trim(),
         github_token: githubToken.trim(),
+        intruder_require_scope: requireScope,
       };
       const saved = await api.configSet(next);
       props.onSaved(saved);
@@ -75,6 +78,10 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       <label className="row">
         <input type="checkbox" checked={dropOutOfScope} onChange={(e) => setDropOutOfScope(e.target.checked)} />
         Refuse out-of-scope requests at the proxy (403). Enforced in the Rust core. Needs scope rules below — with none, everything is refused.
+      </label>
+      <label className="row">
+        <input type="checkbox" checked={requireScope} onChange={(e) => setRequireScope(e.target.checked)} />
+        Require target scope for Intruder. Enforced in the Rust core: out-of-scope requests are blocked and never sent. With an empty scope, an attack is refused. Recommended on.
       </label>
       <label>Integrated browser — Chromium path (optional)
         <input value={chromiumPath} placeholder="leave blank to use the bundled / system Chromium"

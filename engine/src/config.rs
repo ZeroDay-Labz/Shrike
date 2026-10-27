@@ -37,6 +37,10 @@ pub struct ProxyConfig {
     /// Optional GitHub personal access token for BApp-catalog/release API calls.
     /// Empty means unauthenticated (subject to GitHub's 60-requests/hour limit).
     pub github_token: String,
+    /// When true (default), Intruder refuses to send requests that fall outside
+    /// the configured target scope — scope is an enforcement boundary for
+    /// automated tools, not just a UI filter.
+    pub intruder_require_scope: bool,
 }
 
 impl ProxyConfig {
@@ -76,6 +80,7 @@ impl Default for ProxyConfig {
             drop_out_of_scope: false,
             chromium_path: None,
             github_token: String::new(),
+            intruder_require_scope: true,
         }
     }
 }

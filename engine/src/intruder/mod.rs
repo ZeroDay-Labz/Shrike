@@ -8,8 +8,10 @@
 
 use crate::{
     core::HttpService,
+    scope::Scope,
     sender::{RequestSpec, Sender},
 };
+use std::sync::RwLock;
 pub mod generators;
 pub mod payload;
 
@@ -363,12 +365,18 @@ async fn batch_results(
 }
 
 /// Run an attack to completion (or until `stop`), reporting through `sink`.
+///
+/// When `scope` is `Some`, every request is checked against the target scope
+/// before it is sent; out-of-scope requests are reported as blocked and never
+/// leave the machine. This is the automated-tool enforcement point — a configured
+/// scope is a boundary, not just a UI preference.
 pub async fn run(
     attack_id: u64,
     config: IntruderConfig,
     sender: Arc<Sender>,
     sink: Arc<dyn Fn(AttackEvent) + Send + Sync>,
     stop: Arc<AtomicBool>,
+    scope: Option<Arc<RwLock<Scope>>>,
 ) {
     let (clean, positions) = parse_template(&config.template);
     let bases: Vec<String> = positions.iter().map(|(_, b)| b.clone()).collect();
@@ -415,9 +423,31 @@ pub async fn run(
         }
         let raw = build(&clean, &positions, &job.repls);
         let spec = parse_request(&raw, config.service.clone());
+        let display = job.display;
+
+        // Scope enforcement: an automated tool must never send out of scope.
+        if let Some(scope) = &scope {
+            let path = spec.target.split('?').next().unwrap_or(&spec.target);
+            let ok = scope
+                .read()
+                .expect("scope lock")
+                .in_scope(&config.service, path);
+            if !ok {
+                let _ = tx.send(AttackResult {
+                    index: index as u64,
+                    payloads: display,
+                    status: None,
+                    length: 0,
+                    duration_ms: 0,
+                    error: Some("blocked: out of target scope".into()),
+                });
+                drop(permit);
+                continue;
+            }
+        }
+
         let sender = Arc::clone(&sender);
         let tx = tx.clone();
-        let display = job.display;
         set.spawn(async move {
             let _permit = permit;
             let result = match sender.send(spec).await {

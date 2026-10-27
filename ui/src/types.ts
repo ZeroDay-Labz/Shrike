@@ -78,6 +78,7 @@ export interface ConfigView {
   drop_out_of_scope: boolean;
   chromium_path: string;
   github_token: string;
+  intruder_require_scope: boolean;
 }
 
 export interface BrowserStatus {

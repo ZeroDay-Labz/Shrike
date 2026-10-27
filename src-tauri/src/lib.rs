@@ -124,6 +124,12 @@ struct ConfigView {
     chromium_path: String,
     #[serde(default)]
     github_token: String,
+    #[serde(default = "default_true")]
+    intruder_require_scope: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl ConfigView {
@@ -137,6 +143,7 @@ impl ConfigView {
             drop_out_of_scope: c.drop_out_of_scope,
             chromium_path: c.chromium_path.clone().unwrap_or_default(),
             github_token: c.github_token.clone(),
+            intruder_require_scope: c.intruder_require_scope,
         }
     }
     fn apply_to(&self, base: &ProxyConfig) -> Result<ProxyConfig, String> {
@@ -164,6 +171,7 @@ impl ConfigView {
                 }
             },
             github_token: self.github_token.trim().to_string(),
+            intruder_require_scope: self.intruder_require_scope,
         })
     }
 }
@@ -414,7 +422,11 @@ fn repeater_send(state: State<AppState>, spec: RequestSpec) -> CmdResult<SendRes
 // ---- intruder ----
 
 #[tauri::command]
-fn intruder_start(state: State<AppState>, app: AppHandle, config: IntruderConfig) -> u64 {
+fn intruder_start(
+    state: State<AppState>,
+    app: AppHandle,
+    config: IntruderConfig,
+) -> CmdResult<u64> {
     let app2 = app.clone();
     let engine2 = std::sync::Arc::clone(&state.engine);
     let sink: std::sync::Arc<dyn Fn(AttackEvent) + Send + Sync> = std::sync::Arc::new(move |ev| {
@@ -423,7 +435,7 @@ fn intruder_start(state: State<AppState>, app: AppHandle, config: IntruderConfig
         }
         let _ = app2.emit("intruder-event", ev);
     });
-    state.engine.intruder_start(config, sink)
+    state.engine.intruder_start(config, sink).map_err(err)
 }
 
 #[tauri::command]
@@ -753,19 +765,41 @@ fn browser_available(state: State<AppState>, app: AppHandle) -> bool {
         .browser_available(resolve_bundled_chromium(&app))
 }
 
+/// Validate a URL we're about to hand to the OS opener: http(s) only, a real
+/// host, and no whitespace / control / quote characters. (Query metacharacters
+/// like `&` are allowed — safe because we never route the URL through a shell.)
+fn validate_external_url(url: &str) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("http://")
+        .or_else(|| lower.strip_prefix("https://"))
+        .ok_or("only http(s) URLs can be opened")?;
+    if rest.is_empty() || rest.starts_with('/') {
+        return Err("URL has no host".into());
+    }
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '`'))
+    {
+        return Err("URL contains invalid characters".into());
+    }
+    Ok(())
+}
+
 /// Open an external http(s) URL in the user's default browser (official listings/repos).
+/// Never routed through a shell, so URL metacharacters can't become commands.
 #[tauri::command]
 fn open_external(url: String) -> CmdResult<()> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("only http(s) URLs can be opened".into());
-    }
+    validate_external_url(&url)?;
     #[cfg(target_os = "linux")]
     let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
     #[cfg(target_os = "macos")]
     let spawned = std::process::Command::new("open").arg(&url).spawn();
+    // No cmd.exe: rundll32 hands the URL straight to the protocol handler as a
+    // single argument, so `&`/`|`/`^` are data, not shell operators.
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &url])
+    let spawned = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
         .spawn();
     spawned.map(|_| ()).map_err(err)
 }
@@ -937,4 +971,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shrike");
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::validate_external_url;
+    #[test]
+    fn external_url_validation() {
+        assert!(validate_external_url("https://github.com/PortSwigger/logger").is_ok());
+        assert!(validate_external_url("https://x.io/a?b=1&c=2").is_ok()); // query & is fine
+        assert!(validate_external_url("ftp://x").is_err());
+        assert!(validate_external_url("https://").is_err());
+        assert!(validate_external_url("https:///nohost").is_err());
+        assert!(validate_external_url("https://x.io/a&calc.exe").is_ok()); // safe: no shell
+        assert!(validate_external_url("https://x.io/a b").is_err()); // whitespace
+        assert!(validate_external_url("https://x.io/\n").is_err()); // control char
+    }
 }
