@@ -1,0 +1,34 @@
+/target
+/src-tauri/target
+/src-tauri/gen
+/dist
+
+# Secrets / keys / captured traffic — never commit.
+*.crt
+*.pem
+*.key
+*.p12
+*.log
+proxy.log
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Frontend
+ui/node_modules/
+ui/dist/
+
+# Bundled Chromium (downloaded by scripts/fetch-chromium.sh; too big to commit)
+/src-tauri/resources/chromium/*
+!/src-tauri/resources/chromium/README.md
+
+# Bundled JVM host: commit the small jars (host + Montoya API) so the one-click
+# setup always has a source; ignore the big ones (Jython, jlink runtime).
+/src-tauri/resources/jvm/jython-standalone*.jar
+/src-tauri/resources/jvm/runtime/
+/jvm-host/build/
+/jvm-host/lib/jython-standalone*.jar

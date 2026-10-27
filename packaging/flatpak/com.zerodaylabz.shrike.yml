@@ -1,0 +1,48 @@
+# Flatpak manifest for Shrike. Assembled from the portable Linux tarball that
+# scripts/package-tarball.sh produces (CI substitutes the __TARBALL_*__ markers),
+# so the flatpak ships exactly the binaries that were built and tested.
+app-id: com.zerodaylabz.shrike
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: shrike-gui
+
+finish-args:
+  # Desktop app with a webview; talks to local proxy ports and the network.
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Project files and imports/exports live wherever the user keeps them.
+  - --filesystem=home
+  # Launch a system Chromium for the integrated browser when none is bundled.
+  - --talk-name=org.freedesktop.Flatpak
+
+modules:
+  - name: shrike
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 shrike-gui /app/bin/shrike-gui
+      - install -Dm755 shrike /app/bin/shrike
+      - mkdir -p /app/share/shrike && cp -r resources /app/share/shrike/
+      - install -Dm644 com.zerodaylabz.shrike.desktop /app/share/applications/com.zerodaylabz.shrike.desktop
+      - install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/com.zerodaylabz.shrike.png
+    sources:
+      - type: archive
+        path: __TARBALL_PATH__
+        sha256: __TARBALL_SHA256__
+        strip-components: 1
+      - type: file
+        path: ../../src-tauri/icons/icon.png
+      - type: inline
+        dest-filename: com.zerodaylabz.shrike.desktop
+        contents: |
+          [Desktop Entry]
+          Type=Application
+          Name=Shrike
+          Comment=Web security testing suite — proxy, repeater, intruder, scanner
+          Exec=shrike-gui
+          Icon=com.zerodaylabz.shrike
+          Categories=Development;Security;Network;
+          Terminal=false

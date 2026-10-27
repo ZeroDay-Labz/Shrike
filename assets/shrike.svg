@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Shrike">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#171a21"/>
+      <stop offset="1" stop-color="#0b0d12"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <rect x="4.5" y="4.5" width="119" height="119" rx="27.5" fill="none" stroke="#2a2f3a"/>
+  <!-- target rings: the thing being tested -->
+  <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5"/>
+  <circle cx="64" cy="64" r="15" fill="none" stroke="url(#ring)" stroke-width="5"/>
+  <!-- crosshair ticks -->
+  <path d="M64 18v12M64 98v12M18 64h12M98 64h12" stroke="#60a5fa" stroke-width="5" stroke-linecap="round"/>
+  <!-- the shrike's hooked beak: a strike slicing in from the top-right -->
+  <path d="M104 24 L74 54 L84 64 L112 36 Z" fill="#ef4444"/>
+  <circle cx="64" cy="64" r="5" fill="#ef4444"/>
+</svg>

@@ -1,0 +1,31 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12161d"/>
+      <stop offset="1" stop-color="#05070a"/>
+    </linearGradient>
+    <linearGradient id="beak" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff5a4d"/>
+      <stop offset="1" stop-color="#c81e2c"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="24" y="24" width="976" height="976" rx="200" fill="none" stroke="#2a3340" stroke-width="8"/>
+
+  <!-- the thorn/perch, low and behind -->
+  <path d="M232 824 L560 700" stroke="#39434f" stroke-width="26" stroke-linecap="round"/>
+  <path d="M470 735 l58 -14 -14 58 z" fill="#4a5765"/>
+
+  <!-- hooked beak / head: the hero mark -->
+  <path d="M300 320
+           C300 320 560 268 692 440
+           C772 544 744 668 638 726
+           C638 726 726 632 668 532
+           C614 440 472 440 300 472
+           Z"
+        fill="url(#beak)"/>
+
+  <!-- eye -->
+  <circle cx="398" cy="392" r="34" fill="#0b0e13"/>
+</svg>

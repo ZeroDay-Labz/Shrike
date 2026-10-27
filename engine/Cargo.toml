@@ -1,0 +1,46 @@
+[package]
+name = "shrike-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shrike engine: intercepting HTTPS proxy, traffic model, CA, history store"
+
+[lib]
+name = "shrike_engine"
+path = "src/lib.rs"
+
+[dependencies]
+tokio.workspace = true
+hudsucker.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+hyper-rustls.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+webpki-roots.workspace = true
+rustls-native-certs.workspace = true
+time.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+rusqlite.workspace = true
+regex.workspace = true
+percent-encoding.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+x509-parser = { version = "0.18", features = ["verify"] }
+tokio-rustls = "0.26"

@@ -1,0 +1,7 @@
+# Workspace run aliases.
+#   cargo cli   -> headless proxy (shrike).  Pass args after --, e.g. `cargo cli -- ca trust`.
+# The GUI is NOT launched with `cargo run`: Tauri must wire the frontend via its own CLI.
+# Run the desktop app with:  npm run dev        (dev, hot reload)
+#                    build:  npm run build      (standalone installer/AppImage)
+[alias]
+cli = "run -p shrike"

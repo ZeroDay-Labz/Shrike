@@ -1,0 +1,30 @@
+[package]
+name = "shrike-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shrike desktop GUI (Tauri): the full web security testing suite"
+
+[lib]
+name = "shrike_gui_lib"
+crate-type = ["lib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "shrike-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["image-png"] }
+shrike-engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+directories = { workspace = true }

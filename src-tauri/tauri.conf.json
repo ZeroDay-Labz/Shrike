@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Shrike",
+  "version": "0.2.0",
+  "identifier": "com.zerodaylabz.shrike",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Shrike",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "appimage",
+      "rpm",
+      "nsis"
+    ],
+    "resources": [
+      "resources/chromium/**/*",
+      "resources/jvm/**/*"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Clean-room web security testing suite",
+    "longDescription": "Shrike is an original, clean-room intercepting HTTPS proxy and web security testing suite.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Shrike — web security testing suite">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12151c"/>
+      <stop offset="1" stop-color="#07090d"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.22" cy="0.5" r="0.45">
+      <stop offset="0" stop-color="#2563eb" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#1f2430" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- mark -->
+  <g transform="translate(120 170) scale(2.35)">
+    <rect x="4" y="4" width="120" height="120" rx="28" fill="#171a21"/>
+    <rect x="4.5" y="4.5" width="119" height="119" rx="27.5" fill="none" stroke="#2a2f3a"/>
+    <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5"/>
+    <circle cx="64" cy="64" r="15" fill="none" stroke="url(#ring)" stroke-width="5"/>
+    <path d="M64 18v12M64 98v12M18 64h12M98 64h12" stroke="#60a5fa" stroke-width="5" stroke-linecap="round"/>
+    <path d="M104 24 L74 54 L84 64 L112 36 Z" fill="#ef4444"/>
+    <circle cx="64" cy="64" r="5" fill="#ef4444"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text x="470" y="262" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="118" font-weight="700" fill="#f3f4f6" letter-spacing="-3">Shrike</text>
+  <text x="474" y="322" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="34" font-weight="500" fill="#9aa3b2">Web security testing suite, built in Rust.</text>
+  <text x="474" y="366" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="26" fill="#6b7280">Intercepting proxy · Repeater · Intruder · Scanner · Addons</text>
+
+  <!-- feature chips -->
+  <g font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="600">
+    <rect x="474" y="412" width="196" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
+    <text x="572" y="443" text-anchor="middle" fill="#93c5fd">HTTPS MITM</text>
+    <rect x="684" y="412" width="226" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
+    <text x="797" y="443" text-anchor="middle" fill="#93c5fd">Burp BApps run</text>
+    <rect x="924" y="412" width="212" height="48" rx="24" fill="#1b2130" stroke="#2a3344"/>
+    <text x="1030" y="443" text-anchor="middle" fill="#93c5fd">Bundled browser</text>
+  </g>
+
+  <text x="474" y="560" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="24" fill="#6b7280">Open source · MIT · github.com/ZeroDay-Labz/Shrike</text>
+</svg>
