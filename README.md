@@ -34,6 +34,7 @@ Releases are on the [Releases](https://github.com/ZeroDay-Labz/Shrike/releases) 
 | Platform | File | Install |
 | --- | --- | --- |
 | Windows 10/11 (x64) | `Shrike_<version>_x64-setup.exe` | Run it. SmartScreen may warn because the installer is not code-signed; choose *More info ▸ Run anyway*. |
+| Debian / Ubuntu | `Shrike_<version>_amd64.deb` | `sudo apt install ./Shrike_<version>_amd64.deb` |
 | Fedora / RHEL / openSUSE | `Shrike-<version>-1.x86_64.rpm` | `sudo dnf install ./Shrike-<version>-1.x86_64.rpm` |
 | Any Linux (AppImage) | `Shrike_<version>_amd64.AppImage` | `chmod +x` it and run. |
 | Any Linux (portable) | `shrike-<version>-linux-x86_64.tar.gz` | Extract and run `./shrike-gui` (the headless proxy is `./shrike`). |

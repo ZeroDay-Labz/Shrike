@@ -110,7 +110,7 @@ and settings live there) — handy for tests, demos and screenshots.
 ## Build release artifacts (packaging)
 ```sh
 npm run build                # Tauri bundles for THIS host:
-                             #   Linux  -> AppImage + .rpm
+                             #   Linux  -> AppImage + .deb + .rpm
                              #   Windows-> NSIS .exe installer
 scripts/package-tarball.sh   # portable Linux .tar.gz (GUI + CLI + resources)
 ```
