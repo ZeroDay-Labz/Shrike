@@ -118,8 +118,14 @@ Releases are automated: pushing a `v*` tag runs `.github/workflows/release.yml`,
 builds the `.rpm`, AppImage, portable `.tar.gz` (Linux), the NSIS `.exe` (Windows runner)
 and a `.flatpak` (from the tarball via `packaging/flatpak/`), and attaches them to the
 GitHub release. Re-run against an existing tag with
-`gh workflow run release.yml -f tag=vX.Y.Z`. Optional self-contained bundles:
-`scripts/fetch-jvm.sh` (JVM host jars + jlink runtime) and `scripts/fetch-chromium.sh`.
+`gh workflow run release.yml -f tag=vX.Y.Z`.
+
+**Chromium is bundled into every release.** CI runs `node scripts/fetch-chromium.mjs`
+(cross-platform; pins `src-tauri/chromium-version.txt`) before `tauri build`, so Chrome for
+Testing is folded into each installer and the integrated browser works offline with no system
+browser. This adds ~150–250 MB per installer. For a local self-contained build run the same
+script first. `scripts/fetch-jvm.sh` similarly fetches the JVM host jars + a jlink runtime;
+Jython is still fetched on demand at runtime.
 
 ## Where things live
 | What | Path |

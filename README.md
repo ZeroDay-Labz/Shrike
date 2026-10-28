@@ -50,14 +50,22 @@ your `PATH`. The **Addons ▸ Store & installed** tab sets up the host and Jytho
   streaming and memory-bounded.
 * **Query language** — filter history with the Shrike Query Language, e.g.
   `host:example.com code>=400 method:POST`, compiled to safe parameterised SQL.
-* **Integrated browser** — a bundled Chromium (or your system one) launched pre-configured for the
-  proxy and already trusting Shrike's CA. No FoxyProxy, no manual certificate import.
+* **Integrated browser** — Chromium (Chrome for Testing) **bundled into every installer**, launched
+  pre-configured for the proxy and already trusting Shrike's CA. Works offline, no system browser,
+  no FoxyProxy, no manual certificate import.
+* **Scanner & crawler** — a passive scanner that raises Findings from captured traffic (security
+  headers, cookie flags, reflected input, info leaks, mixed content) with no extra requests; an
+  active scanner that probes insertion points for reflected XSS, SQL injection, SSTI, path traversal
+  and command injection (scope-gated, bounded, abortable); and a scope-gated crawler that spiders a
+  host into the site map. Everything files into the Findings tab.
 * **Target** — site map, and pick a host as the engagement scope.
 * **Repeater** — tabbed manual requests with a scrollable editor and response viewer.
 * **Intruder** — Sniper, Battering ram, Pitchfork and Cluster bomb with `§` payload positions, payload
   generators and processors, a bounded concurrent engine (hundreds of threads without locking the UI)
   and a virtualised results grid.
 * **Decoder · Comparer · Sequencer · Logger · Dashboard** — the usual toolkit, native.
+* **Findings** — record security issues (severity, confidence, status, linked requests),
+  highlight and annotate history rows, and export a self-contained HTML or JSON report.
 * **JWT** — decode, edit and re-sign tokens (HS256/384/512, `none`), in-app, no JVM.
 * **Addons** — a BApp Store that mirrors the full public catalog from GitHub (featured first) and installs
   with one click from a release package, a committed jar **or straight from source** (Python entry
@@ -122,10 +130,12 @@ import it as a root; compare the SHA-256 fingerprint from `ca info` on import.
 
 ## Roadmap
 
-Shrike is built milestone by milestone toward full Pro parity — scanner (passive + active checks),
-an out-of-band interaction service, the native plugin API around suite tabs / editor tabs / context
-menus / engine hooks, and native ports of the most valuable extensions. Status and gaps are tracked
-in [docs/feature-gap.md](docs/feature-gap.md).
+Shrike is built milestone by milestone toward full Pro parity. The passive scanner, a basic
+crawler and the first active-scan checks are in; next are more active checks (boolean/time-based
+SQLi, JSON insertion points), a hosted out-of-band interaction service for blind/OAST checks, the
+native plugin API around suite tabs / editor tabs / context menus / engine hooks, and native ports
+of the most valuable extensions. Status and gaps are tracked in
+[docs/feature-gap.md](docs/feature-gap.md).
 
 ## Concept art
 

@@ -9,6 +9,7 @@ use shrike_engine::{
     Engine,
     config::{ProxyConfig, UpstreamTlsMode},
     core::{TrafficEvent, TrafficSink, TransactionSummary, TransactionView, WsDirection},
+    findings::{Annotation, Finding, FindingUpdate, NewFinding},
     intercept::{Decision, parse_request_head},
     intruder::{AttackEvent, IntruderConfig, PreviewResult},
     jvm::{InstalledBapp, JvmResources, JvmStatus},
@@ -96,6 +97,7 @@ impl TrafficSink for TauriSink {
                     secure: service.secure,
                 },
             ),
+            TrafficEvent::FindingAdded(f) => self.app.emit("finding-added", f.as_ref()),
             TrafficEvent::RequestStarted(_) => Ok(()),
         };
         if let Err(e) = result {
@@ -130,6 +132,8 @@ struct ConfigView {
     request_timeout_ms: u64,
     #[serde(default)]
     history_max_rows: usize,
+    #[serde(default = "default_true")]
+    passive_scan_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -153,6 +157,7 @@ impl ConfigView {
             intruder_require_scope: c.intruder_require_scope,
             request_timeout_ms: c.request_timeout_ms,
             history_max_rows: c.history_max_rows,
+            passive_scan_enabled: c.passive_scan_enabled,
         }
     }
     fn apply_to(&self, base: &ProxyConfig) -> Result<ProxyConfig, String> {
@@ -183,6 +188,9 @@ impl ConfigView {
             intruder_require_scope: self.intruder_require_scope,
             request_timeout_ms: self.request_timeout_ms.clamp(1_000, 600_000),
             history_max_rows: self.history_max_rows,
+            passive_scan_enabled: self.passive_scan_enabled,
+            // Crawler/active/OOB settings aren't on this form; keep the base values.
+            ..base.clone()
         })
     }
 }
@@ -297,9 +305,95 @@ fn site_map(state: State<AppState>) -> CmdResult<Vec<SiteNode>> {
     state.engine.site_map().map_err(err)
 }
 
+// ---- crawler ----
+
+#[tauri::command]
+fn crawler_start(state: State<AppState>, app: AppHandle, seed: String) -> CmdResult<()> {
+    let app2 = app.clone();
+    let sink: std::sync::Arc<dyn Fn(shrike_engine::crawler::CrawlEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            let _ = app2.emit("crawl-progress", ev);
+        });
+    state.engine.crawler_start(seed, sink).map_err(err)
+}
+
+#[tauri::command]
+fn crawler_stop(state: State<AppState>) -> CmdResult<()> {
+    state.engine.crawler_stop();
+    Ok(())
+}
+
+// ---- active scanner ----
+
+#[tauri::command]
+fn active_scan_start(state: State<AppState>, app: AppHandle, transaction_id: u64) -> CmdResult<()> {
+    let app2 = app.clone();
+    let sink: std::sync::Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            let _ = app2.emit("scan-progress", ev);
+        });
+    state.engine.active_scan_start(transaction_id, sink).map_err(err)
+}
+
+#[tauri::command]
+fn active_scan_stop(state: State<AppState>) -> CmdResult<()> {
+    state.engine.active_scan_stop();
+    Ok(())
+}
+
 #[tauri::command]
 fn traffic_stats(state: State<AppState>) -> CmdResult<TrafficStats> {
     state.engine.traffic_stats().map_err(err)
+}
+
+// ---- findings & annotations ----
+
+#[tauri::command]
+fn findings_list(state: State<AppState>) -> CmdResult<Vec<Finding>> {
+    state.engine.findings_list().map_err(err)
+}
+
+#[tauri::command]
+fn finding_create(state: State<AppState>, finding: NewFinding) -> CmdResult<Finding> {
+    state.engine.finding_create(finding).map_err(err)
+}
+
+#[tauri::command]
+fn finding_update(
+    state: State<AppState>,
+    id: u64,
+    update: FindingUpdate,
+) -> CmdResult<Option<Finding>> {
+    state.engine.finding_update(id, update).map_err(err)
+}
+
+#[tauri::command]
+fn finding_delete(state: State<AppState>, id: u64) -> CmdResult<bool> {
+    state.engine.finding_delete(id).map_err(err)
+}
+
+#[tauri::command]
+fn annotations(state: State<AppState>) -> CmdResult<Vec<Annotation>> {
+    state.engine.annotations().map_err(err)
+}
+
+#[tauri::command]
+fn annotation_set(
+    state: State<AppState>,
+    transaction_id: u64,
+    color: Option<String>,
+    note: Option<String>,
+) -> CmdResult<()> {
+    state
+        .engine
+        .annotation_set(transaction_id, color, note)
+        .map_err(err)
+}
+
+/// Render the findings report; `format` is `"json"` or `"html"`.
+#[tauri::command]
+fn findings_report(state: State<AppState>, format: String) -> CmdResult<String> {
+    state.engine.findings_report(&format).map_err(err)
 }
 
 // ---- project lifecycle ----
@@ -757,8 +851,10 @@ fn jwt_verify(token: String, secret: String) -> CmdResult<bool> {
 // ---- integrated browser ----
 
 /// Resolve the bundled Chrome-for-Testing binary from the app's resources, if present.
+/// Probes the packaged resource dir, the Flatpak install prefix, and (dev) repo
+/// ancestors — the Flatpak manifest installs resources under /app/share/shrike,
+/// which is not where `resource_dir()` points.
 fn resolve_bundled_chromium(app: &AppHandle) -> Option<std::path::PathBuf> {
-    let base = app.path().resource_dir().ok()?.join("chromium");
     let candidates: &[&str] = if cfg!(target_os = "windows") {
         &["chrome.exe", "chrome-win64\\chrome.exe"]
     } else if cfg!(target_os = "macos") {
@@ -770,9 +866,25 @@ fn resolve_bundled_chromium(app: &AppHandle) -> Option<std::path::PathBuf> {
     } else {
         &["chrome", "chrome-linux64/chrome"]
     };
-    candidates
+
+    // `chromium` base directories to try, in order.
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        bases.push(res.join("chromium"));
+    }
+    // Flatpak: resources are installed next to the binary's share prefix.
+    bases.push(std::path::PathBuf::from("/app/share/shrike/resources/chromium"));
+    // Dev: search repo ancestors of cwd and the executable.
+    if let Ok(cwd) = std::env::current_dir() {
+        bases.extend(cwd.ancestors().map(|p| p.join("src-tauri/resources/chromium")));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        bases.extend(exe.ancestors().map(|p| p.join("src-tauri/resources/chromium")));
+    }
+
+    bases
         .iter()
-        .map(|c| base.join(c))
+        .flat_map(|base| candidates.iter().map(move |c| base.join(c)))
         .find(|p| p.is_file())
 }
 
@@ -903,11 +1015,7 @@ pub fn run() {
         .setup(move |app| {
             // Register the live-traffic bridge now that we have an AppHandle.
             let handle = app.handle().clone();
-            engine_for_setup.add_sink_factory(Box::new(move || {
-                Box::new(TauriSink {
-                    app: handle.clone(),
-                })
-            }));
+            engine_for_setup.add_sink(Box::new(TauriSink { app: handle }));
             // Resolve the bundled JVM host jars so Java BApps can be run.
             engine_for_setup.set_jvm_resources(resolve_jvm_resources(app.handle()));
             // Automation/screenshots: with SHRIKE_START_TOOL set, bring the proxy up
@@ -971,6 +1079,17 @@ pub fn run() {
             decode_chain,
             compare,
             traffic_stats,
+            crawler_start,
+            crawler_stop,
+            active_scan_start,
+            active_scan_stop,
+            findings_list,
+            finding_create,
+            finding_update,
+            finding_delete,
+            annotations,
+            annotation_set,
+            findings_report,
             sequencer_analyze,
             plugins_list,
             plugin_add,

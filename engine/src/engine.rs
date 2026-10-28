@@ -8,7 +8,7 @@ use crate::{
     browser::{self, BrowserConfig, BrowserStatus},
     ca::CaManager,
     config::ProxyConfig,
-    core::{EventBus, HttpService, TrafficSink, TransactionSummary, TransactionView},
+    core::{EventBus, HttpService, TrafficEvent, TrafficSink, TransactionSummary, TransactionView},
     intercept::{Decision, Interceptor},
     intruder::{self, AttackEvent, IntruderConfig},
     jvm::{
@@ -35,9 +35,6 @@ use std::{
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle};
 use tracing::{info, warn};
 
-/// Builds a fresh sink each time the proxy starts (the bus consumes its sinks).
-/// Front ends register one of these to receive live traffic (e.g. a Tauri sink).
-pub type SinkFactory = Box<dyn Fn() -> Box<dyn TrafficSink> + Send + Sync>;
 
 struct RunningProxy {
     shutdown: oneshot::Sender<()>,
@@ -211,7 +208,18 @@ pub struct Engine {
     attacks: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     next_attack_id: AtomicU64,
     proxy: Mutex<Option<RunningProxy>>,
-    sink_factories: Mutex<Vec<SinkFactory>>,
+    /// Long-lived fan-out for captured traffic. The proxy, crawler and active
+    /// scanner all emit into it; the store, passive scanner and GUI bridge are
+    /// attached as sinks. Lives for the whole engine, independent of proxy runs.
+    ingest: EventBus,
+    /// Keeps the ingest dispatcher task alive for the engine's lifetime.
+    _ingest_task: tokio::task::JoinHandle<()>,
+    /// Live toggle for the passive scanner, shared with its sink.
+    passive_enabled: Arc<AtomicBool>,
+    /// Cancellation flag for the active crawl (one crawl at a time).
+    crawl_stop: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cancellation flag for the active scan (one scan at a time).
+    scan_stop: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Engine {
@@ -235,6 +243,21 @@ impl Engine {
             std::time::Duration::from_millis(config.request_timeout_ms),
         )?);
 
+        // Long-lived ingest fan-out, seeded with the store sink (so all captured
+        // traffic persists). EventBus spawns a task, so build it in runtime context.
+        let (ingest, ingest_task) = {
+            let _enter = runtime.enter();
+            EventBus::start(vec![Box::new(store.sink())])
+        };
+        // Passive scanner: inspects captured traffic and files Findings. Attached
+        // to the ingest bus so it sees proxy, crawler and active-scan traffic alike.
+        let passive_enabled = Arc::new(AtomicBool::new(config.passive_scan_enabled));
+        ingest.add_sink(Box::new(crate::scanner::PassiveScanner::new(
+            Arc::clone(&store),
+            ingest.clone(),
+            Arc::clone(&passive_enabled),
+        )));
+
         let engine = Arc::new(Self {
             runtime,
             ca: Arc::new(ca),
@@ -252,12 +275,12 @@ impl Engine {
             attacks: Mutex::new(HashMap::new()),
             next_attack_id: AtomicU64::new(1),
             proxy: Mutex::new(None),
-            sink_factories: Mutex::new(Vec::new()),
+            ingest,
+            _ingest_task: ingest_task,
+            passive_enabled,
+            crawl_stop: Mutex::new(None),
+            scan_stop: Mutex::new(None),
         });
-
-        // The store always receives traffic; its sink is rebuilt per proxy run.
-        let store_for_sink = Arc::clone(&store);
-        engine.add_sink_factory(Box::new(move || Box::new(store_for_sink.sink())));
         Ok(engine)
     }
 
@@ -406,6 +429,117 @@ impl Engine {
         self.attacks.lock().expect("attacks lock").remove(&id);
     }
 
+    // --- crawler (scope-gated spider; feeds the ingest bus) ---
+
+    /// Start a crawl from `seed`. Any running crawl is cancelled first. Progress
+    /// is reported through `sink`. Fetched pages flow into the ingest bus, so
+    /// history, the site map and the passive scanner all pick them up.
+    pub fn crawler_start(
+        &self,
+        seed: String,
+        sink: Arc<dyn Fn(crate::crawler::CrawlEvent) + Send + Sync>,
+    ) -> Result<()> {
+        if seed.trim().is_empty() {
+            return Err(anyhow!("enter a seed URL to crawl"));
+        }
+        self.crawler_stop(); // cancel any in-flight crawl
+        let cfg = self.config();
+        let opts = crate::crawler::CrawlOptions {
+            concurrency: cfg.crawl_concurrency,
+            delay_ms: cfg.crawl_delay_ms,
+            max_pages: cfg.crawl_max_pages,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.crawl_stop.lock().expect("crawl lock") = Some(Arc::clone(&stop));
+        let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
+        let scope = Arc::clone(&self.scope);
+        let bus = self.ingest.clone();
+        self.runtime.spawn(async move {
+            crate::crawler::run_crawl(seed, sender, scope, bus, stop, opts, sink).await;
+        });
+        Ok(())
+    }
+
+    /// Cancel the active crawl, if any.
+    pub fn crawler_stop(&self) {
+        if let Some(stop) = self.crawl_stop.lock().expect("crawl lock").take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    // --- active scanner (insertion-point probing; scope-gated) ---
+
+    /// Actively scan the request behind `transaction_id`. The target must be in
+    /// scope — active scanning sends attack traffic, so scope is a hard gate.
+    /// Any running scan is cancelled first. Hits become (deduped) Findings.
+    pub fn active_scan_start(
+        &self,
+        transaction_id: u64,
+        sink: Arc<dyn Fn(crate::scanner::ActiveScanEvent) + Send + Sync>,
+    ) -> Result<()> {
+        let view = self
+            .store
+            .history_get(transaction_id)?
+            .ok_or_else(|| anyhow!("no such transaction"))?;
+        let r = &view.request;
+        let path = r.target.split('?').next().unwrap_or(&r.target).to_string();
+        // Hard scope gate (independent of the Intruder toggle).
+        {
+            let scope = self.scope.read().expect("scope lock");
+            if scope.is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty — add the target host to the engagement scope before \
+                     active scanning"
+                ));
+            }
+            if !scope.in_scope(&r.service, &path) {
+                return Err(anyhow!(
+                    "that request is out of the engagement scope; active scanning is refused"
+                ));
+            }
+        }
+        let spec = RequestSpec {
+            service: r.service.clone(),
+            method: r.method.clone(),
+            target: r.target.clone(),
+            headers: r.headers.clone(),
+            body: r.body.text.clone().unwrap_or_default(),
+        };
+        let host = r.service.host.clone();
+
+        self.active_scan_stop();
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.scan_stop.lock().expect("scan lock") = Some(Arc::clone(&stop));
+        let config = crate::scanner::ActiveScanConfig {
+            concurrency: self.config().active_scan_concurrency,
+        };
+        let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
+        let scope = Arc::clone(&self.scope);
+        let store = Arc::clone(&self.store);
+        let bus = self.ingest.clone();
+        self.runtime.spawn(async move {
+            let hits =
+                crate::scanner::run_active_scan(spec, sender, scope, stop, config, sink).await;
+            for hit in hits {
+                let key = hit.dedup_key(&host, &path);
+                let nf = hit.into_finding(&host, &path, transaction_id);
+                match store.finding_create_deduped(nf, &key) {
+                    Ok(Some(f)) => bus.emit(TrafficEvent::FindingAdded(Arc::new(f))),
+                    Ok(None) => {}
+                    Err(e) => warn!(error = %e, "active-scan finding insert failed"),
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Cancel the active scan, if any.
+    pub fn active_scan_stop(&self) {
+        if let Some(stop) = self.scan_stop.lock().expect("scan lock").take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Replace the configuration. Takes effect on the next proxy start; if the
     /// proxy is running it is restarted so listener/TLS/passthrough changes apply.
     pub fn set_config(&self, config: ProxyConfig) -> Result<()> {
@@ -416,6 +550,8 @@ impl Engine {
             std::time::Duration::from_millis(config.request_timeout_ms),
         );
         let max_rows = config.history_max_rows;
+        self.passive_enabled
+            .store(config.passive_scan_enabled, Ordering::Relaxed);
         *self.config.write().expect("config lock") = config;
         if let Ok(sender) = Sender::new(mode, max, timeout) {
             *self.sender.write().expect("sender lock") = Arc::new(sender);
@@ -428,9 +564,17 @@ impl Engine {
         Ok(())
     }
 
-    /// Register a sink factory invoked each time the proxy (re)starts.
-    pub fn add_sink_factory(&self, factory: SinkFactory) {
-        self.sink_factories.lock().expect("sink lock").push(factory);
+    /// Attach a sink to the long-lived ingest bus (e.g. the GUI bridge or the
+    /// passive scanner). It receives every captured transaction from then on,
+    /// from the proxy, crawler and active scanner alike.
+    pub fn add_sink(&self, sink: Box<dyn TrafficSink>) {
+        self.ingest.add_sink(sink);
+    }
+
+    /// A clone of the ingest bus, for components that emit captured traffic
+    /// (the crawler and active scanner).
+    pub fn ingest_bus(&self) -> EventBus {
+        self.ingest.clone()
     }
 
     /// The address the proxy is listening on, or `None` when stopped.
@@ -463,18 +607,9 @@ impl Engine {
             .context("binding proxy listener")?;
         let local_addr = listener.local_addr().context("reading listener address")?;
 
-        let sinks: Vec<Box<dyn TrafficSink>> = self
-            .sink_factories
-            .lock()
-            .expect("sink lock")
-            .iter()
-            .map(|f| f())
-            .collect();
-        // EventBus::start spawns a dispatcher task, so build it inside the runtime context.
-        let (bus, bus_task) = {
-            let _enter = self.runtime.enter();
-            EventBus::start(sinks)
-        };
+        // Feed the long-lived ingest bus (store + passive scanner + GUI bridge);
+        // the proxy is just one producer, so the bus outlives each run.
+        let bus = self.ingest.clone();
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let shutdown = async move {
@@ -485,7 +620,9 @@ impl Engine {
         let match_replace = Arc::clone(&self.match_replace);
 
         let task = self.runtime.spawn(async move {
-            let result = proxy::serve(
+            // The ingest bus is owned by the engine and is NOT drained here — it
+            // lives across proxy runs so the crawler/scanner keep feeding it.
+            proxy::serve(
                 listener,
                 config,
                 ca,
@@ -495,10 +632,7 @@ impl Engine {
                 match_replace,
                 shutdown,
             )
-            .await;
-            // handlers (and their bus clones) are dropped inside serve(); drain the bus.
-            let _ = bus_task.await;
-            result
+            .await
         });
 
         info!(%local_addr, "proxy started");
@@ -582,6 +716,58 @@ impl Engine {
     /// Distinct endpoints (host + path) seen in history, for the Target site map.
     pub fn site_map(&self) -> Result<Vec<SiteNode>> {
         self.store.site_map()
+    }
+
+    // --- findings & annotations (the triage layer) ---
+
+    pub fn findings_list(&self) -> Result<Vec<crate::findings::Finding>> {
+        self.store.findings_list()
+    }
+
+    pub fn finding_create(
+        &self,
+        new: crate::findings::NewFinding,
+    ) -> Result<crate::findings::Finding> {
+        let finding = self.store.finding_create(new)?;
+        self.ingest
+            .emit(TrafficEvent::FindingAdded(Arc::new(finding.clone())));
+        Ok(finding)
+    }
+
+    pub fn finding_update(
+        &self,
+        id: u64,
+        upd: crate::findings::FindingUpdate,
+    ) -> Result<Option<crate::findings::Finding>> {
+        self.store.finding_update(id, upd)
+    }
+
+    pub fn finding_delete(&self, id: u64) -> Result<bool> {
+        self.store.finding_delete(id)
+    }
+
+    /// All transaction annotations (highlight colour + note), for overlaying on history.
+    pub fn annotations(&self) -> Result<Vec<crate::findings::Annotation>> {
+        self.store.annotations_all()
+    }
+
+    /// Set or clear a transaction's annotation (empty colour + note clears it).
+    pub fn annotation_set(
+        &self,
+        transaction_id: u64,
+        color: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        self.store.annotation_set(transaction_id, color, note)
+    }
+
+    /// Render a findings report in the requested format (`"json"` or `"html"`).
+    pub fn findings_report(&self, format: &str) -> Result<String> {
+        let report = self.store.findings_report()?;
+        Ok(match format {
+            "html" => report.to_html(),
+            _ => report.to_json(),
+        })
     }
 
     // --- project lifecycle (disk-backed, autosaving) ---
@@ -1308,13 +1494,7 @@ mod tests {
             data_dir: dir.to_path_buf(),
             upstream_tls: UpstreamTlsMode::Verify,
             max_capture_bytes: 1024 * 1024,
-            passthrough_hosts: Vec::new(),
-            drop_out_of_scope: false,
-            chromium_path: None,
-            github_token: String::new(),
-            intruder_require_scope: true,
-            request_timeout_ms: 30_000,
-            history_max_rows: 0,
+            ..ProxyConfig::default()
         }
     }
 
@@ -1337,6 +1517,71 @@ mod tests {
         // unprefixed noise is forwarded as an event but not trusted into state
         assert!(!s.outputs.contains(&"noise".to_string()));
         assert!(s.errors.contains(&"boom".to_string()));
+    }
+
+    #[test]
+    fn passive_scanner_files_findings_from_the_ingest_bus() {
+        use crate::core::{CapturedRequest, CapturedResponse, Transaction};
+        use bytes::Bytes;
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(test_config(dir.path())).unwrap();
+
+        // A bare HTTPS HTML response: missing every security header.
+        let make_txn = || {
+            let (rp, _) = hyper::Request::builder()
+                .method("GET")
+                .uri("https://lab.test/")
+                .body(())
+                .unwrap()
+                .into_parts();
+            let request = CapturedRequest::from_parts(
+                1,
+                "127.0.0.1:9000".parse().unwrap(),
+                &rp,
+                Bytes::new(),
+                0,
+                true,
+            )
+            .unwrap();
+            let (sp, _) = hyper::Response::builder()
+                .status(200)
+                .header("content-type", "text/html")
+                .body(())
+                .unwrap()
+                .into_parts();
+            let response =
+                CapturedResponse::from_parts(&sp, Bytes::from_static(b"<html></html>"), 13, true);
+            Transaction {
+                request,
+                response: Some(response),
+                error: None,
+                duration: std::time::Duration::from_millis(1),
+            }
+        };
+
+        let bus = engine.ingest_bus();
+        bus.emit(TrafficEvent::Completed(Arc::new(make_txn())));
+
+        // The scanner runs on its own thread; poll briefly for the findings.
+        let mut count = 0;
+        for _ in 0..50 {
+            count = engine.findings_list().unwrap().len();
+            if count > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(count >= 3, "expected several header findings, got {count}");
+
+        // Re-emitting the same transaction must not create duplicates.
+        bus.emit(TrafficEvent::Completed(Arc::new(make_txn())));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(
+            engine.findings_list().unwrap().len(),
+            count,
+            "passive findings are deduped on re-observation"
+        );
     }
 
     #[test]

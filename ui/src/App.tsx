@@ -22,6 +22,7 @@ import { Sequencer } from "./components/Sequencer";
 import { Extender } from "./components/Extender";
 import { ExtensionTab } from "./components/ExtensionTab";
 import { Jwt } from "./components/Jwt";
+import { Findings } from "./components/Findings";
 import { Icon } from "./components/Icon";
 import type { BappOutput, InstalledBapp, RunningBapp } from "./types";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -33,6 +34,7 @@ import { rawRequest, rawResponse } from "./util";
 type Tool = { id: string; label: string; icon: string; group: string };
 const TOOLS: Tool[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard", group: "Overview" },
+  { id: "findings", label: "Findings", icon: "finding", group: "Overview" },
   { id: "proxy", label: "Proxy", icon: "proxy", group: "Capture" },
   { id: "target", label: "Target", icon: "target", group: "Capture" },
   { id: "logger", label: "Logger", icon: "logger", group: "Capture" },
@@ -77,6 +79,7 @@ export default function App() {
   const [repTabs, setRepTabs] = useState<RepeaterTab[]>([]);
   const [activeRep, setActiveRep] = useState<number>();
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const [scanStatus, setScanStatus] = useState("");
   const [intruderSeed, setIntruderSeed] = useState<{ service: Service; raw: string }>();
   const [intercepting, setIntercepting] = useState(false);
   const [held, setHeld] = useState<InterceptItem[]>([]);
@@ -134,6 +137,18 @@ export default function App() {
     const poll = setInterval(refreshExtMeta, 3000);
     return () => { un.then((f) => f()); clearInterval(poll); };
   }, [refreshExtMeta]);
+
+  // Active-scan progress toast (findings themselves stream into the Findings tab).
+  useEffect(() => {
+    const un = events.onScan((ev) => {
+      if (ev.type === "progress") setScanStatus(`scanning… ${ev.done}/${ev.total}`);
+      else if (ev.type === "finished") {
+        setScanStatus(`scan ${ev.stopped ? "stopped" : "done"} — ${ev.findings} finding${ev.findings === 1 ? "" : "s"}`);
+        setTimeout(() => setScanStatus(""), 6000);
+      } else setScanStatus(ev.message);
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
 
   const runExt = useCallback(async (sha: string) => {
     try { await api.bappRun(sha); } catch { /* status is shown in the addon view */ }
@@ -287,6 +302,34 @@ export default function App() {
     setTool("decoder");
   }, []);
 
+  // Jump to a transaction in the proxy history (from a finding's evidence).
+  const showTransaction = useCallback((id: number) => {
+    setTool("proxy");
+    setTab("http");
+    setSelId(id);
+  }, []);
+
+  // Active-scan the request behind a transaction (scope-gated in the core).
+  const activeScan = useCallback(async (id: number) => {
+    try { await api.activeScanStart(id); setScanStatus("scan starting…"); }
+    catch (e) { setScanStatus(String(e)); setTimeout(() => setScanStatus(""), 6000); }
+  }, []);
+
+  // Record a finding seeded from a captured transaction, then open Findings.
+  const addFindingFromView = useCallback(async (v: TransactionView) => {
+    const path = (() => {
+      try { return new URL(v.request.url).pathname; } catch { return v.request.url; }
+    })();
+    await api.findingCreate({
+      title: `${v.request.method} ${path}`,
+      severity: "info",
+      host: v.request.service.host,
+      path,
+      transaction_ids: [v.request.id],
+    });
+    setTool("findings");
+  }, []);
+
   // The full set of "send to …" actions that make sense for a captured request,
   // shared by the Proxy, Logger and Target context menus.
   const sendItems = useCallback((getView: () => Promise<TransactionView | null>): MenuItem[] => [
@@ -295,7 +338,9 @@ export default function App() {
     { label: "Send to Comparer (A)", onClick: async () => { const v = await getView(); if (v) sendToComparer(v, "a"); } },
     { label: "Send to Comparer (B)", onClick: async () => { const v = await getView(); if (v) sendToComparer(v, "b"); } },
     { label: "Send to Decoder", onClick: async () => { const v = await getView(); if (v) sendToDecoder(v); } },
-  ], [addRepeaterFromView, addToIntruder, sendToComparer, sendToDecoder]);
+    { label: "Active scan this request", onClick: async () => { const v = await getView(); if (v) activeScan(v.request.id); } },
+    { label: "Record as finding", onClick: async () => { const v = await getView(); if (v) addFindingFromView(v); } },
+  ], [addRepeaterFromView, addToIntruder, sendToComparer, sendToDecoder, addFindingFromView, activeScan]);
 
   const addHostToScope = useCallback(async (host: string) => {
     const cur = await api.scopeGet();
@@ -438,6 +483,9 @@ export default function App() {
     if (tool === "jwt") {
       return <Jwt />;
     }
+    if (tool === "findings") {
+      return <Findings onShowTransaction={showTransaction} />;
+    }
     if (tool === "extender") {
       return (
         <Extender
@@ -498,6 +546,8 @@ export default function App() {
                   <button className="btn" onClick={() => sendToComparer(detail, "a")} title="Send to Comparer A">⤷ Cmp A</button>
                   <button className="btn" onClick={() => sendToComparer(detail, "b")} title="Send to Comparer B">⤷ Cmp B</button>
                   <button className="btn" onClick={() => sendToDecoder(detail)}>⤷ Decoder</button>
+                  <button className="btn" onClick={() => addFindingFromView(detail)} title="Record as finding">⤷ Finding</button>
+                  <button className="btn" onClick={() => activeScan(detail.request.id)} title="Active-scan this request (scope-gated)">⤷ Scan</button>
                   <button className="btn" onClick={() => copyText(toCurl(detail.request))}>curl</button>
                 </div>
                 <div className="pane-fill">
@@ -514,7 +564,7 @@ export default function App() {
         )}
       </div>
     );
-  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
+  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, addFindingFromView, activeScan, showTransaction, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
 
   return (
     <div className="app">
@@ -590,6 +640,7 @@ export default function App() {
         <main className="content">{main}</main>
       </div>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+      {scanStatus && <div className="scan-toast" onClick={() => setScanStatus("")}>{scanStatus}</div>}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>
   );

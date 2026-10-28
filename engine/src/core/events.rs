@@ -41,6 +41,9 @@ pub enum TrafficEvent {
         /// Raw HTTP request text shown in the intercept editor.
         raw: String,
     },
+    /// A finding was recorded (by the operator or a scanner). Carried on the bus
+    /// so the GUI bridge can push it live, regardless of which source raised it.
+    FindingAdded(Arc<crate::findings::Finding>),
 }
 
 /// Consumer of traffic events. Runs on the bus task, so keep work short or
@@ -49,25 +52,43 @@ pub trait TrafficSink: Send + 'static {
     fn handle(&mut self, event: &TrafficEvent);
 }
 
-/// Cheap-to-clone handle for emitting events.
-#[derive(Debug, Clone)]
+/// Cheap-to-clone handle for emitting events. Sinks can be registered up front
+/// (`start`) or added later (`add_sink`) — the latter lets a long-lived bus pick
+/// up a sink such as the GUI bridge after the webview exists.
+#[derive(Clone)]
 pub struct EventBus {
     tx: mpsc::UnboundedSender<TrafficEvent>,
+    sinks: Arc<std::sync::Mutex<Vec<Box<dyn TrafficSink>>>>,
+}
+
+impl std::fmt::Debug for EventBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBus").finish_non_exhaustive()
+    }
 }
 
 impl EventBus {
-    /// Spawn the dispatcher task feeding `sinks` in order. The task ends once
+    /// Spawn the dispatcher task feeding `initial` sinks (and any later added via
+    /// [`add_sink`](Self::add_sink)) in registration order. The task ends once
     /// every `EventBus` clone has been dropped.
-    pub fn start(mut sinks: Vec<Box<dyn TrafficSink>>) -> (Self, JoinHandle<()>) {
+    pub fn start(initial: Vec<Box<dyn TrafficSink>>) -> (Self, JoinHandle<()>) {
+        let sinks = Arc::new(std::sync::Mutex::new(initial));
+        let dispatch = Arc::clone(&sinks);
         let (tx, mut rx) = mpsc::unbounded_channel::<TrafficEvent>();
         let task = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                for sink in sinks.iter_mut() {
+                for sink in dispatch.lock().expect("event sinks lock").iter_mut() {
                     sink.handle(&event);
                 }
             }
         });
-        (Self { tx }, task)
+        (Self { tx, sinks }, task)
+    }
+
+    /// Register another sink on a running bus (e.g. the passive scanner or the
+    /// GUI bridge). It receives every event emitted from now on.
+    pub fn add_sink(&self, sink: Box<dyn TrafficSink>) {
+        self.sinks.lock().expect("event sinks lock").push(sink);
     }
 
     pub fn emit(&self, event: TrafficEvent) {
@@ -204,6 +225,7 @@ impl TrafficSink for StdoutSink {
                     ),
                 }
             }
+            TrafficEvent::FindingAdded(_) => {}
             TrafficEvent::Intercepted { id, service, .. } => {
                 println!("      HOLD #{id} {service} (intercepted, awaiting decision)");
             }

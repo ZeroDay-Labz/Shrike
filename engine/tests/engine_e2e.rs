@@ -377,3 +377,133 @@ fn intruder_refuses_empty_scope_and_blocks_out_of_scope() {
     assert_eq!(blocked, 2, "both out-of-scope requests are blocked");
     assert_eq!(sent_ok, 0, "nothing out of scope reaches the server");
 }
+
+// ---- active scanner e2e (reflecting mock = reflected XSS) ----
+
+/// A vulnerable upstream that reflects the `q` query param into HTML, unencoded.
+async fn vuln_reflect(
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    let q = req
+        .uri()
+        .query()
+        .and_then(|qs| qs.split('&').find_map(|p| p.strip_prefix("q=")))
+        .map(pct_decode)
+        .unwrap_or_default();
+    let body = format!("<html>results for {q}</html>");
+    Ok(Response::builder()
+        .header("content-type", "text/html")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap())
+}
+
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    let hex = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push(h << 4 | l);
+            i += 3;
+            continue;
+        }
+        out.push(if b[i] == b'+' { b' ' } else { b[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+async fn spawn_vuln() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service_fn(vuln_reflect))
+                    .await;
+            });
+        }
+    });
+    addr
+}
+
+#[test]
+fn active_scan_finds_reflected_xss_and_is_scope_gated() {
+    use std::sync::Arc;
+
+    let helper = Runtime::new().unwrap();
+    let vuln = helper.block_on(spawn_vuln());
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        upstream_tls: UpstreamTlsMode::AcceptInvalid,
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+    let proxy_addr = engine.start_proxy().unwrap();
+
+    // Drive one request through the proxy so it lands in history with a real id.
+    helper.block_on(through_proxy(proxy_addr, vuln, "/search?q=hello"));
+
+    // Wait for the store to persist it, then grab its id.
+    let id = {
+        let mut found = None;
+        for _ in 0..50 {
+            let rows = engine.history_page(&HistoryFilter::default(), 50, 0).unwrap();
+            if let Some(r) = rows.iter().find(|r| r.url.contains("/search")) {
+                found = Some(r.id);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        found.expect("request captured into history")
+    };
+
+    // Out of scope with an empty scope → refused.
+    let sink: Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> =
+        Arc::new(|_| {});
+    assert!(
+        engine.active_scan_start(id, Arc::clone(&sink)).is_err(),
+        "active scan must refuse when scope is empty"
+    );
+
+    // Put the target in scope and scan.
+    engine
+        .set_scope(vec![ScopeRule::include_host("127.0.0.1")])
+        .unwrap();
+    engine.active_scan_start(id, sink).unwrap();
+
+    // The reflected-XSS check should file a finding.
+    let mut titles: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        titles = engine
+            .findings_list()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.title)
+            .collect();
+        if titles.iter().any(|t| t.to_lowercase().contains("cross-site")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert!(
+        titles.iter().any(|t| t.to_lowercase().contains("cross-site")),
+        "expected a reflected-XSS finding, got {titles:?}"
+    );
+
+    engine.stop_proxy().unwrap();
+}

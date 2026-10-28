@@ -14,6 +14,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
   const [requireScope, setRequireScope] = useState(true);
   const [timeoutMs, setTimeoutMs] = useState(30000);
   const [historyMax, setHistoryMax] = useState(0);
+  const [passiveScan, setPassiveScan] = useState(true);
   const [msg, setMsg] = useState("");
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
@@ -30,6 +31,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       setRequireScope(props.config.intruder_require_scope ?? true);
       setTimeoutMs(props.config.request_timeout_ms ?? 30000);
       setHistoryMax(props.config.history_max_rows ?? 0);
+      setPassiveScan(props.config.passive_scan_enabled ?? true);
     }
   }, [props.config]);
 
@@ -48,6 +50,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         intruder_require_scope: requireScope,
         request_timeout_ms: timeoutMs,
         history_max_rows: historyMax,
+        passive_scan_enabled: passiveScan,
       };
       const saved = await api.configSet(next);
       props.onSaved(saved);
@@ -104,6 +107,10 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       <label>History retention — keep newest N requests (0 = unlimited)
         <input value={historyMax} inputMode="numeric"
           onChange={(e) => setHistoryMax(Math.max(0, Number(e.target.value) || 0))} />
+      </label>
+      <label className="row">
+        <input type="checkbox" checked={passiveScan} onChange={(e) => setPassiveScan(e.target.checked)} />
+        Passive scanning — inspect captured traffic and raise Findings (security headers, cookie flags, reflected input, info leaks). Sends no extra requests.
       </label>
       <div className="row">
         <button className="btn start" onClick={save}>Save</button>

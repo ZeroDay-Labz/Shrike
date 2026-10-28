@@ -47,6 +47,20 @@ pub struct ProxyConfig {
     /// History retention: keep at most this many newest transactions (0 =
     /// unlimited). Bounds unbounded project growth for long sessions.
     pub history_max_rows: usize,
+    /// When true (default), the passive scanner inspects captured traffic and
+    /// files Findings. No extra requests are ever sent.
+    pub passive_scan_enabled: bool,
+    /// Crawler: max concurrent in-flight fetches.
+    pub crawl_concurrency: usize,
+    /// Crawler: politeness delay between fetches per worker, in milliseconds.
+    pub crawl_delay_ms: u64,
+    /// Crawler: hard cap on pages fetched in one crawl.
+    pub crawl_max_pages: usize,
+    /// Active scanner: max concurrent in-flight probe requests.
+    pub active_scan_concurrency: usize,
+    /// Out-of-band interaction server (empty = disabled). Opt-in; used only by
+    /// blind/OAST active checks.
+    pub oob_server: String,
 }
 
 impl ProxyConfig {
@@ -89,6 +103,12 @@ impl Default for ProxyConfig {
             intruder_require_scope: true,
             request_timeout_ms: 30_000,
             history_max_rows: 0,
+            passive_scan_enabled: true,
+            crawl_concurrency: 8,
+            crawl_delay_ms: 0,
+            crawl_max_pages: 500,
+            active_scan_concurrency: 10,
+            oob_server: String::new(),
         }
     }
 }

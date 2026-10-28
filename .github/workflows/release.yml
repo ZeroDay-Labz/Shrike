@@ -5,8 +5,9 @@
 #   Windows — NSIS installer (.exe)
 #   Flatpak — .flatpak bundle assembled from the Linux tarball
 #
-# The bundled Chromium and Jython are NOT fetched in CI (hundreds of MB): the app
-# falls back to a system Chromium and offers one-click Jython setup at runtime.
+# Chrome for Testing IS bundled into every package (fetched per-OS before the
+# Tauri build) so the integrated browser works with no system browser and no
+# network. Jython is still fetched on demand at runtime (one-click setup).
 name: Release
 
 on:
@@ -54,10 +55,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf rpm libssl-dev build-essential curl wget file libfuse2
+            librsvg2-dev patchelf rpm libssl-dev build-essential curl wget file libfuse2 unzip
 
       - name: Install UI dependencies
         run: npm --prefix ui ci
+
+      # Fetch Chrome for Testing into src-tauri/resources/chromium/ so the Tauri
+      # bundler folds it into the package (the resources glob picks it up).
+      - name: Bundle Chromium
+        run: node scripts/fetch-chromium.mjs
 
       - name: Build bundles
         run: npm --prefix ui exec -- tauri build --bundles ${{ matrix.targets }}

@@ -11,6 +11,7 @@ use crate::core::{
     TrafficEvent, TrafficSink, Transaction, TransactionSummary, TransactionView, WsDirection,
     WsMessageEvent, epoch_millis,
 };
+use crate::findings::{Annotation, Confidence, Finding, FindingStatus, FindingUpdate, NewFinding, Severity};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params, types::Value};
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use std::{
 use tracing::{error, warn};
 
 /// Current on-disk schema version. Bump when adding a migration below.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS project (
@@ -68,6 +69,30 @@ CREATE TABLE IF NOT EXISTS websocket_messages (
     text        TEXT,
     client_addr TEXT    NOT NULL,
     at_ms       INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id            INTEGER PRIMARY KEY,
+    severity      TEXT    NOT NULL,
+    confidence    TEXT    NOT NULL,
+    status        TEXT    NOT NULL,
+    title         TEXT    NOT NULL,
+    detail        TEXT    NOT NULL DEFAULT '',
+    host          TEXT,
+    path          TEXT,
+    txn_ids       TEXT    NOT NULL DEFAULT '[]',
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    -- Non-null for scanner findings (check|host|path[|param]); NULL = manual,
+    -- never deduped. A partial unique index (added in migrations) enforces it.
+    dedup_key     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS annotations (
+    transaction_id INTEGER PRIMARY KEY,
+    color          TEXT,
+    note           TEXT,
+    updated_at_ms  INTEGER NOT NULL
 );
 "#;
 
@@ -146,7 +171,29 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             params!["Shrike project", now, SCHEMA_VERSION],
         )?;
     }
-    // Future migrations: `if version < 2 { ...; }` etc., then fall through.
+    // v1 -> v2: adds the `findings` and `annotations` tables. These are created
+    // idempotently by SCHEMA (CREATE TABLE IF NOT EXISTS) on every open, so no
+    // data migration is needed here — only the version stamp below.
+    if version < 3 {
+        // v2 -> v3: findings.dedup_key. Fresh DBs get the column from SCHEMA; an
+        // existing v2 findings table needs it added. Then a partial unique index
+        // (non-null keys only) enforces scanner-finding dedup; manual findings
+        // keep a NULL key and are never deduped.
+        let has_col = conn
+            .prepare("PRAGMA table_info(findings)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(std::result::Result::ok)
+            .any(|c| c == "dedup_key");
+        if !has_col {
+            conn.execute("ALTER TABLE findings ADD COLUMN dedup_key TEXT", [])?;
+        }
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_dedup \
+             ON findings(dedup_key) WHERE dedup_key IS NOT NULL",
+            [],
+        )?;
+    }
+    // Future migrations: `if version < 4 { ...; }` etc., then fall through.
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -565,6 +612,304 @@ impl Store {
         conn.execute_batch("DELETE FROM transactions; DELETE FROM websocket_messages;")?;
         Ok(())
     }
+
+    // --- Findings & annotations ---------------------------------------------
+    //
+    // These are low-frequency, user-initiated writes, so (like `prune_history`)
+    // they run synchronously on the read connection rather than the bus writer
+    // thread; WAL + busy_timeout serialise them against the writer.
+
+    /// Create a finding and return the stored row (with its id and timestamps).
+    pub fn finding_create(&self, new: NewFinding) -> Result<Finding> {
+        let now = epoch_millis(SystemTime::now());
+        let ids_json = serde_json::to_string(&new.transaction_ids).unwrap_or_else(|_| "[]".into());
+        let conn = self.read.lock().expect("store read lock");
+        conn.execute(
+            "INSERT INTO findings
+             (severity, confidence, status, title, detail, host, path, txn_ids, created_at_ms, updated_at_ms)
+             VALUES (?,?,?,?,?,?,?,?,?,?)",
+            params![
+                new.severity.as_str(),
+                new.confidence.as_str(),
+                FindingStatus::Open.as_str(),
+                new.title,
+                new.detail,
+                new.host,
+                new.path,
+                ids_json,
+                now as i64,
+                now as i64,
+            ],
+        )?;
+        let id = conn.last_insert_rowid() as u64;
+        Ok(Finding {
+            id,
+            severity: new.severity,
+            confidence: new.confidence,
+            status: FindingStatus::Open,
+            title: new.title,
+            detail: new.detail,
+            host: new.host,
+            path: new.path,
+            transaction_ids: new.transaction_ids,
+            created_at_ms: now,
+            updated_at_ms: now,
+        })
+    }
+
+    /// Create a finding with a dedup key (scanner output). Returns the new row,
+    /// or `None` if a finding with the same key already exists — so re-scanning
+    /// the same endpoint doesn't pile up duplicates. Appends the transaction id
+    /// to the existing finding's evidence when it's a duplicate.
+    pub fn finding_create_deduped(
+        &self,
+        new: NewFinding,
+        dedup_key: &str,
+    ) -> Result<Option<Finding>> {
+        {
+            let conn = self.read.lock().expect("store read lock");
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM findings WHERE dedup_key = ?",
+                    [dedup_key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                // Merge any new evidence transaction ids into the existing row.
+                drop(conn);
+                if !new.transaction_ids.is_empty() {
+                    self.append_finding_evidence(id as u64, &new.transaction_ids)?;
+                }
+                return Ok(None);
+            }
+        }
+        let now = epoch_millis(SystemTime::now());
+        let ids_json = serde_json::to_string(&new.transaction_ids).unwrap_or_else(|_| "[]".into());
+        let conn = self.read.lock().expect("store read lock");
+        conn.execute(
+            "INSERT INTO findings
+             (severity, confidence, status, title, detail, host, path, txn_ids, created_at_ms, updated_at_ms, dedup_key)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            params![
+                new.severity.as_str(),
+                new.confidence.as_str(),
+                FindingStatus::Open.as_str(),
+                new.title,
+                new.detail,
+                new.host,
+                new.path,
+                ids_json,
+                now as i64,
+                now as i64,
+                dedup_key,
+            ],
+        )?;
+        let id = conn.last_insert_rowid() as u64;
+        Ok(Some(Finding {
+            id,
+            severity: new.severity,
+            confidence: new.confidence,
+            status: FindingStatus::Open,
+            title: new.title,
+            detail: new.detail,
+            host: new.host,
+            path: new.path,
+            transaction_ids: new.transaction_ids,
+            created_at_ms: now,
+            updated_at_ms: now,
+        }))
+    }
+
+    /// Union `ids` into a finding's evidence list (used when a duplicate finding
+    /// is re-observed on a new transaction).
+    fn append_finding_evidence(&self, id: u64, ids: &[u64]) -> Result<()> {
+        let conn = self.read.lock().expect("store read lock");
+        let current: Option<String> = conn
+            .query_row("SELECT txn_ids FROM findings WHERE id = ?", [id as i64], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let Some(json) = current else { return Ok(()) };
+        let mut list: Vec<u64> = serde_json::from_str(&json).unwrap_or_default();
+        let mut changed = false;
+        for &i in ids {
+            if !list.contains(&i) {
+                list.push(i);
+                changed = true;
+            }
+        }
+        if changed {
+            // Cap evidence so a check firing on thousands of requests stays bounded.
+            const MAX_EVIDENCE: usize = 50;
+            if list.len() > MAX_EVIDENCE {
+                list.truncate(MAX_EVIDENCE);
+            }
+            let j = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+            conn.execute("UPDATE findings SET txn_ids = ? WHERE id = ?", params![j, id as i64])?;
+        }
+        Ok(())
+    }
+
+    /// Apply a partial update; returns the updated row, or `None` if absent.
+    pub fn finding_update(&self, id: u64, upd: FindingUpdate) -> Result<Option<Finding>> {
+        let now = epoch_millis(SystemTime::now());
+        {
+            let conn = self.read.lock().expect("store read lock");
+            if let Some(v) = upd.severity {
+                conn.execute(
+                    "UPDATE findings SET severity=? WHERE id=?",
+                    params![v.as_str(), id as i64],
+                )?;
+            }
+            if let Some(v) = upd.confidence {
+                conn.execute(
+                    "UPDATE findings SET confidence=? WHERE id=?",
+                    params![v.as_str(), id as i64],
+                )?;
+            }
+            if let Some(v) = upd.status {
+                conn.execute(
+                    "UPDATE findings SET status=? WHERE id=?",
+                    params![v.as_str(), id as i64],
+                )?;
+            }
+            if let Some(v) = upd.title {
+                conn.execute(
+                    "UPDATE findings SET title=? WHERE id=?",
+                    params![v, id as i64],
+                )?;
+            }
+            if let Some(v) = upd.detail {
+                conn.execute(
+                    "UPDATE findings SET detail=? WHERE id=?",
+                    params![v, id as i64],
+                )?;
+            }
+            if let Some(v) = upd.transaction_ids {
+                let j = serde_json::to_string(&v).unwrap_or_else(|_| "[]".into());
+                conn.execute(
+                    "UPDATE findings SET txn_ids=? WHERE id=?",
+                    params![j, id as i64],
+                )?;
+            }
+            conn.execute(
+                "UPDATE findings SET updated_at_ms=? WHERE id=?",
+                params![now as i64, id as i64],
+            )?;
+        }
+        self.finding_get(id)
+    }
+
+    /// Delete a finding; returns true if a row was removed.
+    pub fn finding_delete(&self, id: u64) -> Result<bool> {
+        let conn = self.read.lock().expect("store read lock");
+        let n = conn.execute("DELETE FROM findings WHERE id=?", [id as i64])?;
+        Ok(n > 0)
+    }
+
+    /// Fetch one finding by id.
+    pub fn finding_get(&self, id: u64) -> Result<Option<Finding>> {
+        let conn = self.read.lock().expect("store read lock");
+        conn.query_row(
+            "SELECT id, severity, confidence, status, title, detail, host, path, txn_ids, created_at_ms, updated_at_ms
+             FROM findings WHERE id=?",
+            [id as i64],
+            finding_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// All findings, most recently updated first.
+    pub fn findings_list(&self) -> Result<Vec<Finding>> {
+        let conn = self.read.lock().expect("store read lock");
+        let mut stmt = conn.prepare(
+            "SELECT id, severity, confidence, status, title, detail, host, path, txn_ids, created_at_ms, updated_at_ms
+             FROM findings ORDER BY updated_at_ms DESC",
+        )?;
+        let rows = stmt
+            .query_map([], finding_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Set (or clear) the annotation on a transaction. When both colour and note
+    /// are empty the annotation row is removed.
+    pub fn annotation_set(
+        &self,
+        transaction_id: u64,
+        color: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let color = color.filter(|s| !s.is_empty());
+        let note = note.filter(|s| !s.is_empty());
+        let conn = self.read.lock().expect("store read lock");
+        if color.is_none() && note.is_none() {
+            conn.execute(
+                "DELETE FROM annotations WHERE transaction_id=?",
+                [transaction_id as i64],
+            )?;
+            return Ok(());
+        }
+        let now = epoch_millis(SystemTime::now());
+        conn.execute(
+            "INSERT INTO annotations (transaction_id, color, note, updated_at_ms)
+             VALUES (?,?,?,?)
+             ON CONFLICT(transaction_id) DO UPDATE SET color=excluded.color,
+                 note=excluded.note, updated_at_ms=excluded.updated_at_ms",
+            params![transaction_id as i64, color, note, now as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Every annotation, for overlaying highlights/notes onto history rows.
+    pub fn annotations_all(&self) -> Result<Vec<Annotation>> {
+        let conn = self.read.lock().expect("store read lock");
+        let mut stmt = conn.prepare(
+            "SELECT transaction_id, color, note, updated_at_ms FROM annotations",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Annotation {
+                    transaction_id: r.get::<_, i64>(0)? as u64,
+                    color: r.get(1)?,
+                    note: r.get(2)?,
+                    updated_at_ms: r.get::<_, i64>(3)? as u64,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Build a findings report over the current finding set.
+    pub fn findings_report(&self) -> Result<crate::findings::Report> {
+        let project = self.project_meta(false)?.name;
+        let findings = self.findings_list()?;
+        Ok(crate::findings::Report::new(
+            project,
+            epoch_millis(SystemTime::now()),
+            findings,
+        ))
+    }
+}
+
+/// Map a `findings` row (in the fixed column order used by the queries above).
+fn finding_from_row(r: &rusqlite::Row) -> rusqlite::Result<Finding> {
+    let ids: String = r.get(8)?;
+    Ok(Finding {
+        id: r.get::<_, i64>(0)? as u64,
+        severity: Severity::parse(&r.get::<_, String>(1)?),
+        confidence: Confidence::parse(&r.get::<_, String>(2)?),
+        status: FindingStatus::parse(&r.get::<_, String>(3)?),
+        title: r.get(4)?,
+        detail: r.get(5)?,
+        host: r.get(6)?,
+        path: r.get(7)?,
+        transaction_ids: serde_json::from_str(&ids).unwrap_or_default(),
+        created_at_ms: r.get::<_, i64>(9)? as u64,
+        updated_at_ms: r.get::<_, i64>(10)? as u64,
+    })
 }
 
 /// Build a `WHERE` clause (or empty string) and its bound values.
@@ -1158,5 +1503,136 @@ mod tests {
             Some("v2"),
             "persists across reopen"
         );
+    }
+
+    #[test]
+    fn findings_crud_and_report() {
+        use crate::findings::{Confidence, FindingStatus, FindingUpdate, NewFinding, Severity};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sqlite");
+        let store = Store::open(&path).unwrap();
+
+        let f = store
+            .finding_create(NewFinding {
+                title: "Reflected input".into(),
+                severity: Severity::Medium,
+                confidence: Confidence::Firm,
+                detail: "param q reflected".into(),
+                host: Some("lab.test".into()),
+                path: Some("/search".into()),
+                transaction_ids: vec![3, 4],
+            })
+            .unwrap();
+        assert_eq!(f.id, 1);
+        assert_eq!(f.status, FindingStatus::Open);
+        assert_eq!(f.transaction_ids, vec![3, 4]);
+
+        // update promotes severity + status, round-trips ids
+        let upd = store
+            .finding_update(
+                f.id,
+                FindingUpdate {
+                    severity: Some(Severity::High),
+                    status: Some(FindingStatus::Confirmed),
+                    transaction_ids: Some(vec![3, 4, 9]),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(upd.severity, Severity::High);
+        assert_eq!(upd.status, FindingStatus::Confirmed);
+        assert_eq!(upd.transaction_ids, vec![3, 4, 9]);
+        assert!(upd.updated_at_ms >= f.updated_at_ms);
+
+        // list + report summary
+        store
+            .finding_create(NewFinding {
+                title: "Info leak".into(),
+                severity: Severity::Info,
+                confidence: Confidence::Tentative,
+                detail: String::new(),
+                host: None,
+                path: None,
+                transaction_ids: vec![],
+            })
+            .unwrap();
+        assert_eq!(store.findings_list().unwrap().len(), 2);
+        let report = store.findings_report().unwrap();
+        assert_eq!(report.findings[0].severity, Severity::High); // most severe first
+        let high = report
+            .summary
+            .iter()
+            .find(|s| s.severity == Severity::High)
+            .unwrap();
+        assert_eq!(high.count, 1);
+
+        // delete
+        assert!(store.finding_delete(f.id).unwrap());
+        assert!(!store.finding_delete(f.id).unwrap());
+        assert_eq!(store.findings_list().unwrap().len(), 1);
+
+        // survives reopen (schema v2 persists)
+        drop(store);
+        let again = Store::open(&path).unwrap();
+        assert_eq!(again.findings_list().unwrap().len(), 1);
+        assert_eq!(again.project_meta(false).unwrap().schema_version, 3);
+    }
+
+    #[test]
+    fn deduped_findings_collapse_and_merge_evidence() {
+        use crate::findings::{Confidence, NewFinding, Severity};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let mk = |txn: u64| NewFinding {
+            title: "Missing HSTS".into(),
+            severity: Severity::Low,
+            confidence: Confidence::Firm,
+            detail: String::new(),
+            host: Some("lab.test".into()),
+            path: Some("/".into()),
+            transaction_ids: vec![txn],
+        };
+        let key = "missing-hsts|lab.test|/";
+        let first = store.finding_create_deduped(mk(1), key).unwrap();
+        assert!(first.is_some(), "first insert creates the finding");
+        // Same key again: no new row, but the new evidence id is merged in.
+        let dup = store.finding_create_deduped(mk(2), key).unwrap();
+        assert!(dup.is_none(), "duplicate key does not create a second finding");
+        let all = store.findings_list().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].transaction_ids, vec![1, 2], "evidence merged");
+
+        // A different key is a distinct finding; manual findings (null key) never dedupe.
+        store.finding_create_deduped(mk(3), "missing-hsts|lab.test|/login").unwrap();
+        store.finding_create(mk(4)).unwrap();
+        store.finding_create(mk(5)).unwrap();
+        assert_eq!(store.findings_list().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn annotations_set_update_and_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+
+        store
+            .annotation_set(5, Some("red".into()), Some("look here".into()))
+            .unwrap();
+        let all = store.annotations_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].transaction_id, 5);
+        assert_eq!(all[0].color.as_deref(), Some("red"));
+
+        // upsert overwrites
+        store
+            .annotation_set(5, Some("amber".into()), None)
+            .unwrap();
+        let a = &store.annotations_all().unwrap()[0];
+        assert_eq!(a.color.as_deref(), Some("amber"));
+        assert_eq!(a.note, None);
+
+        // clearing both removes the row
+        store.annotation_set(5, None, None).unwrap();
+        assert!(store.annotations_all().unwrap().is_empty());
     }
 }

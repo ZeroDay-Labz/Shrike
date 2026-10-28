@@ -19,7 +19,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | JWT tool | Pro(BApp) | **done** | Native decode / edit / HS256-384-512 + `none` sign & verify (`engine/src/tools/jwt`). |
 | Target scope & exclusions | CE | **done** | Enforced in core for proxy **and Intruder** (out-of-scope requests blocked, never sent); include/exclude, regex. |
 | Site map | CE | **partial** | Built from history; no active crawl yet. |
-| Integrated browser | Pro | **done** | Bundled/system Chromium launched pre-configured for the proxy and already trusting the CA (SPKI allow-list). |
+| Integrated browser | Pro | **done** | Chrome for Testing is **bundled into every installer** (fetched per-OS in CI), launched pre-configured for the proxy and already trusting the CA (SPKI allow-list); system Chromium is a fallback. Works offline, no system browser needed. |
 | History query language | Pro | **done** | Shrike Query Language (`engine/src/query`) → parameterised SQL; one query box over history. |
 | Import traffic | Pro | **done** | XML item exports from other proxy tools import into history (`engine/src/import`). |
 
@@ -37,7 +37,7 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Recent-projects list, launch chooser | Pro | **planned** | — |
 | Repeater tabs persisted | Pro | **done** | Via `ui:repeater` project state. |
 | Intruder configs/results persisted | Pro | **planned** | Config persistence next; results persistence after. |
-| Notes/annotations | Pro | **planned** | Arrives with Findings. |
+| Notes/annotations | Pro | **done** | Per-transaction highlight colour + note (`annotations` table); overlaid on history. |
 | History retention cap | Pro | **done** | Keep newest-N (configurable; 0 = unlimited), pruned in the writer thread. |
 
 ## Reliability & safety (hardening)
@@ -57,13 +57,14 @@ labels: **done** (works + tested), **partial** (usable, gaps noted), **planned**
 | Intruder (unthrottled, §-positions) | Pro | **done** | 4 attack types; payload processing; generators (numbers/brute/case/null). |
 | Global project search | Pro | **partial** | Shrike Query Language (`engine/src/query`): host/method/code/url/path/mime/port/len/body, AND/OR/NOT, compiled to parameterised SQL. Cross-tool unification planned. |
 | Advanced history filters | Pro | **done** | Basic host/method/status/errors filters + the query language in the Proxy bar. |
-| Active scanner + issues | Pro | **planned** | Not started; passive checks need captured responses. |
-| Crawler | Pro | **planned** | — |
-| Out-of-band (Collaborator-style) | Pro | **planned** | Opt-in, user-configured; not started. |
+| Passive scanner | Pro | **done** | Runs on the capture path (`engine/src/scanner/passive.rs`, a `TrafficSink` on the ingest bus, own worker thread): security headers, cookie flags, reflected input, info-disclosure banners, stack traces, mixed content. Emits deduped Findings. |
+| Active scanner + issues | Pro | **partial** | `engine/src/scanner/active.rs`: insertion-point engine (query + urlencoded body) + data-driven checks — reflected XSS, error-based SQLi, SSTI, path traversal, OS command injection. Scope-gated, bounded, abortable; files deduped Findings. Boolean/time-based + OOB checks and JSON insertion points are the next extensions. |
+| Crawler | Pro | **done (basic)** | `engine/src/crawler/`: scope-gated async spider (seed-host + scope exclusions), politeness (concurrency/delay/max-pages), link + form-action discovery; fetched pages flow through the ingest bus into history, the site map and the passive scanner. |
+| Out-of-band (Collaborator-style) | Pro | **partial (interface)** | `engine/src/oob/`: `OobProvider` trait + disabled `NullProvider` default so blind checks stay inert until configured. Hosted DNS/HTTP listener deferred; opt-in, off by default. |
 | Extensibility / plugin API | Pro | **partial** | Manifest registry + permissions/hooks; BApps run in a JVM host (Java/Montoya + Python/Jython). Installs are quarantined and never executed until an explicit Run. Native sandboxed execution runtime planned. |
 | BApp store integration | Pro | **done** | Full public catalog mirrored from GitHub; one-click install from a release, committed jar, or source (Python). JVM host runs Java (Montoya) + Python (Jython). See [bapp-integration.md](bapp-integration.md). |
-| Reporting (HTML/XML/JSON) | Pro | **planned** | Project backup/export exists at DB level; a Findings-driven report is next. |
-| Findings / issues + annotations | Pro | **planned** | Next milestone; central findings list + per-request notes/colours. |
+| Reporting (HTML/JSON) | Pro | **done** | Findings-driven report (`engine/src/findings`): severity summary + self-contained HTML, or JSON; exported from the Findings tab. |
+| Findings / issues + annotations | Pro | **done** | Central findings list (severity/confidence/status, linked transactions) + per-transaction notes/colours; `engine/src/findings` + `findings`/`annotations` tables. The home for scanner output in M4. |
 | Workflows / rules engine | Pro | **planned** | Passive/active rules (match → tag/colour/extract); sandboxed native-plugin runtime. |
 | REST API | Pro | **planned** | — |
 

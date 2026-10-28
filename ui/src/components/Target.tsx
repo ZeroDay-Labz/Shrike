@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ScopeRule, SiteNode, TransactionView } from "../types";
-import { api } from "../api";
+import { api, events } from "../api";
 import { MessageViewer } from "./MessageViewer";
 import { SplitPane } from "./SplitPane";
 import { Icon } from "./Icon";
@@ -56,6 +56,9 @@ export function Target(props: {
   const [selected, setSelected] = useState<SiteNode>();
   const [detail, setDetail] = useState<TransactionView>();
   const [msg, setMsg] = useState("");
+  const [seed, setSeed] = useState("");
+  const [crawling, setCrawling] = useState(false);
+  const [crawlStat, setCrawlStat] = useState<{ visited: number; queued: number } | null>(null);
 
   const load = useCallback(async () => {
     try { setNodes(await api.siteMap()); setMsg(""); }
@@ -70,6 +73,32 @@ export function Target(props: {
     if (!selected) { setDetail(undefined); return; }
     api.historyGet(selected.id).then((d) => setDetail(d ?? undefined));
   }, [selected]);
+
+  // Live crawl progress; refresh the site map as pages come in and when it ends.
+  useEffect(() => {
+    const un = events.onCrawl((ev) => {
+      if (ev.type === "progress") {
+        setCrawlStat({ visited: ev.visited, queued: ev.queued });
+        if (ev.visited % 10 === 0) load();
+      } else {
+        setCrawling(false);
+        setCrawlStat({ visited: ev.visited, queued: 0 });
+        setMsg(ev.stopped ? `Crawl stopped after ${ev.visited} pages` : `Crawl finished — ${ev.visited} pages`);
+        load();
+      }
+    });
+    return () => { un.then((fn) => fn()); };
+  }, [load]);
+
+  const startCrawl = useCallback(async () => {
+    const s = seed.trim();
+    if (!s) { setMsg("enter a seed URL to crawl, e.g. https://host/"); return; }
+    try { await api.crawlerStart(s); setCrawling(true); setCrawlStat({ visited: 0, queued: 1 }); setMsg(""); }
+    catch (e) { setMsg(String(e)); }
+  }, [seed]);
+  const stopCrawl = useCallback(async () => {
+    try { await api.crawlerStop(); } catch { /* ignore */ }
+  }, []);
 
   const groups = useMemo(() => group(nodes), [nodes]);
   const engagement = useMemo(
@@ -106,12 +135,29 @@ export function Target(props: {
         <button className="btn" onClick={() => { load(); loadScope(); }}>Refresh</button>
       </div>
       {engagement.length > 0 && (
-        <div className="target-engagement" title="Tools (Intruder, future scanner) act only on in-scope hosts">
+        <div className="target-engagement" title="Tools (Intruder, scanner, crawler) act only on in-scope hosts">
           <Icon name="target" size={13} />
           <span className="eng-label">Engagement:</span>
           {engagement.map((h) => <span className="eng-chip" key={h}>{h}</span>)}
         </div>
       )}
+      <div className="target-crawl" title="Spider the seed host (scope exclusions honoured). Crawled pages flow into history, the site map and the passive scanner.">
+        <input
+          className="crawl-seed"
+          placeholder="crawl seed, e.g. https://lab.test/"
+          value={seed}
+          onChange={(e) => setSeed(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !crawling && startCrawl()}
+        />
+        {crawling
+          ? <button className="btn stop" onClick={stopCrawl}>Stop</button>
+          : <button className="btn" onClick={startCrawl}>Crawl</button>}
+        {crawlStat && (
+          <span className="mut crawl-stat">
+            {crawling ? "crawling… " : ""}{crawlStat.visited} visited{crawlStat.queued ? `, ${crawlStat.queued} queued` : ""}
+          </span>
+        )}
+      </div>
       <div className="target-list">
         {groups.length === 0 && <div className="hint">no traffic yet — browse through the proxy</div>}
         {groups.map((g) => {

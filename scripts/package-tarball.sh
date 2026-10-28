@@ -19,6 +19,9 @@ mkdir -p "$STAGE/resources"
 cp "$GUI" "$STAGE/shrike-gui"
 [ -x "$CLI" ] && cp "$CLI" "$STAGE/shrike" || true
 cp -r "$HERE/src-tauri/resources/jvm" "$STAGE/resources/" 2>/dev/null || true
+# Bundled Chromium (Chrome for Testing), when fetched — the flatpak is built from
+# this tarball, so it must carry the browser too.
+cp -r "$HERE/src-tauri/resources/chromium" "$STAGE/resources/" 2>/dev/null || true
 cp "$HERE/src-tauri/icons/icon.png" "$STAGE/icon.png"
 cp "$HERE/README.md" "$STAGE/"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/" || true

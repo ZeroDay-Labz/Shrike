@@ -35,7 +35,7 @@ pub struct BrowserStatus {
 
 /// The command-line flags that wire a Chromium instance to Shrike.
 pub fn build_args(cfg: &BrowserConfig) -> Vec<String> {
-    vec![
+    let mut args = vec![
         format!("--user-data-dir={}", cfg.profile_dir.display()),
         // Route all of this browser's traffic through Shrike (HTTP + HTTPS via CONNECT).
         format!("--proxy-server=http://{}", cfg.listen),
@@ -48,8 +48,19 @@ pub fn build_args(cfg: &BrowserConfig) -> Vec<String> {
         "--disable-sync".into(),
         "--disable-component-update".into(),
         "--disable-features=Translate,OptimizationHints".into(),
-        cfg.start_url.clone(),
-    ]
+    ];
+    // Chrome's setuid/namespace sandbox cannot nest inside the Flatpak sandbox, so
+    // the browser refuses to start there unless we disable it. Only inside Flatpak.
+    if in_flatpak() {
+        args.push("--no-sandbox".into());
+    }
+    args.push(cfg.start_url.clone());
+    args
+}
+
+/// True when running inside a Flatpak sandbox (set by the runtime).
+fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
 }
 
 /// Launch the browser (non-blocking). A second launch against the same profile is
@@ -74,11 +85,26 @@ pub fn find_system_chromium(override_path: Option<&str>) -> Option<PathBuf> {
     }
 
     const ABSOLUTE: &[&str] = &[
+        // Linux distro + snap locations (PATH-name search below misses these).
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/brave-browser",
+        "/usr/bin/microsoft-edge",
+        "/snap/bin/chromium",
+        "/snap/bin/google-chrome",
+        "/var/lib/flatpak/exports/bin/org.chromium.Chromium",
+        // macOS app bundles.
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        // Windows install locations.
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
     ];
     for a in ABSOLUTE {
         let pb = PathBuf::from(a);

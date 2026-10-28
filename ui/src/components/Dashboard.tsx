@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { TrafficStats } from "../types";
-import { api } from "../api";
+import type { Finding, Severity, TrafficStats } from "../types";
+import { SEVERITIES } from "../types";
+import { api, events } from "../api";
 
 const CLASS_LABEL: Record<number, string> = { 1: "1xx", 2: "2xx", 3: "3xx", 4: "4xx", 5: "5xx" };
 const CLASS_CSS: Record<number, string> = { 1: "s-1xx", 2: "s-2xx", 3: "s-3xx", 4: "s-4xx", 5: "s-5xx" };
@@ -8,13 +9,25 @@ const CLASS_CSS: Record<number, string> = { 1: "s-1xx", 2: "s-2xx", 3: "s-3xx", 
 /** Traffic overview. Scan/issue panels arrive with the active scanner (M7). */
 export function Dashboard(props: { running: boolean; listen: string }) {
   const [stats, setStats] = useState<TrafficStats>();
+  const [findings, setFindings] = useState<Finding[]>([]);
   const [msg, setMsg] = useState("");
 
   const load = async () => {
-    try { setStats(await api.trafficStats()); setMsg(""); }
-    catch (e) { setMsg(String(e)); }
+    try {
+      setStats(await api.trafficStats());
+      setFindings(await api.findingsList());
+      setMsg("");
+    } catch (e) { setMsg(String(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  // Keep the findings tiles live as scanners file issues.
+  useEffect(() => {
+    const un = events.onFinding(() => { api.findingsList().then(setFindings).catch(() => {}); });
+    return () => { un.then((fn) => fn()); };
+  }, []);
+
+  const sevCounts = SEVERITIES.map((s) => [s, findings.filter((f) => f.severity === s).length] as [Severity, number]);
 
   const maxHost = Math.max(1, ...(stats?.top_hosts.map(([, n]) => n) ?? [1]));
   const statusTotal = stats?.by_status_class.reduce((a, [, n]) => a + n, 0) ?? 0;
@@ -39,6 +52,17 @@ export function Dashboard(props: { running: boolean; listen: string }) {
       </div>
 
       <div className="dash-cols">
+        <section className="dash-card">
+          <h3>Findings</h3>
+          {findings.length === 0 ? <div className="hint">no findings yet — enable passive scanning or run an active scan</div> : (
+            <div className="dash-chips">
+              {sevCounts.filter(([, n]) => n > 0).map(([s, n]) => (
+                <span className={"sev-pill sev-" + s} key={s}><i /> <b>{n}</b> {s}</span>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="dash-card">
           <h3>Status codes</h3>
           {statusTotal === 0 ? <div className="hint">no responses yet</div> : (

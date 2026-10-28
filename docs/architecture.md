@@ -28,10 +28,13 @@ additionally registers a sink that forwards live traffic to the webview.
   engine boundary (Tauri commands, events, the SQLite store) is lowered into
   these. `BodyView` carries text when it decodes cleanly, base64 otherwise, so
   **binary bodies survive** the boundary.
-- `events.rs` — the `EventBus`: the proxy emits `TrafficEvent`s
+- `events.rs` — the `EventBus`: a **long-lived ingest fan-out** owned by the
+  `Engine`. The proxy, crawler and active scanner all emit `TrafficEvent`s
   (`RequestStarted`, `Completed`, `TunnelPassthrough`, `WebSocketMessage`,
-  `Intercepted`); a dispatcher task fans them out to `TrafficSink`s off the hot
-  path. Sinks today: the SQLite store and the Tauri bridge.
+  `Intercepted`, `FindingAdded`); a dispatcher task fans them to `TrafficSink`s
+  off the hot path. Sinks: the SQLite store, the passive scanner and the Tauri
+  bridge (added via `add_sink`). The bus outlives each proxy run, so crawled and
+  scanned traffic reaches the same sinks whether or not the proxy is running.
 
 ## Capture pipeline
 
@@ -52,9 +55,11 @@ writer thread consumes bus events through a channel (rusqlite is blocking), so b
 handlers stay short; a separate pooled read connection runs queries concurrently.
 
 Tables: `project` (metadata + `schema_version`), `transactions` (indexed columns +
-full `view_json`), `websocket_messages`, `meta` (key/value: scope, match&replace,
-plugins, and `ui:*` per-tool UI state). Schema version is tracked in
-`PRAGMA user_version` with a migration runner in `Store::open`. See
+full `view_json`), `websocket_messages`, `findings`, `annotations`, `meta`
+(key/value: scope, match&replace, plugins, and `ui:*` per-tool UI state). Schema
+version is tracked in `PRAGMA user_version` with a migration runner in
+`Store::open` (currently v3 — v2 adds `findings` + `annotations`, v3 adds the
+`findings.dedup_key` partial-unique index so scanner findings collapse). See
 [storage-design.md](storage-design.md).
 
 ## Tools (all on the shared model)
@@ -68,6 +73,22 @@ plugins, and `ui:*` per-tool UI state). Schema version is tracked in
 - **Query** — `query/` compiles the Shrike Query Language into parameterised SQL
   for history search (`Store::query_page`/`query_count`).
 - **Import** — `import/` parses XML item exports from other proxy tools into history.
+- **Findings** — `findings/` owns the triage value types (severity / confidence /
+  status, linked transaction ids) and the report renderers (JSON + a
+  self-contained HTML document). Findings + per-transaction annotations (highlight
+  colour + note) persist in the store; this is the home the M4 scanner's output
+  will file into.
+- **Scanner** — `scanner/` turns traffic into Findings. `passive.rs` is a
+  `TrafficSink` on the ingest bus (own worker thread) running no-traffic checks
+  (headers, cookies, reflection, info leaks, mixed content); `active.rs` is an
+  insertion-point engine that probes query/body params with data-driven checks
+  (XSS, SQLi, SSTI, traversal, command injection), strictly **scope-gated**,
+  bounded and abortable. Both file **deduped** Findings.
+- **Crawler** — `crawler/` is a scope-gated async spider using the shared
+  `Sender`; discovered pages are emitted onto the ingest bus so history, the site
+  map and the passive scanner pick them up.
+- **OOB** — `oob/` defines the out-of-band interaction provider interface for
+  blind checks; the default `NullProvider` is disabled (hosted listener deferred).
 - **Target / site map** — `Store::site_map()` aggregates history into a host→path tree.
 - **Dashboard** — `Store::stats()` traffic aggregates.
 - **Addons** — `plugins/` native manifest registry (data-only foundation) + a JVM

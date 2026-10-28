@@ -81,6 +81,7 @@ export interface ConfigView {
   intruder_require_scope: boolean;
   request_timeout_ms: number;
   history_max_rows: number;
+  passive_scan_enabled: boolean;
 }
 
 export interface BrowserStatus {
@@ -342,3 +343,60 @@ export type DiffSeg =
   | { kind: "equal"; text: string }
   | { kind: "insert"; text: string }
   | { kind: "delete"; text: string };
+
+// ---- Findings & annotations ----
+
+export type Severity = "info" | "low" | "medium" | "high" | "critical";
+export type Confidence = "tentative" | "firm" | "certain";
+export type FindingStatus = "open" | "confirmed" | "false_positive" | "resolved";
+
+export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
+
+export interface Finding {
+  id: number;
+  severity: Severity;
+  confidence: Confidence;
+  status: FindingStatus;
+  title: string;
+  detail: string;
+  host: string | null;
+  path: string | null;
+  transaction_ids: number[];
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface NewFinding {
+  title: string;
+  severity?: Severity;
+  confidence?: Confidence;
+  detail?: string;
+  host?: string | null;
+  path?: string | null;
+  transaction_ids?: number[];
+}
+
+export interface FindingUpdate {
+  severity?: Severity;
+  confidence?: Confidence;
+  status?: FindingStatus;
+  title?: string;
+  detail?: string;
+  transaction_ids?: number[];
+}
+
+export interface Annotation {
+  transaction_id: number;
+  color: string | null;
+  note: string | null;
+  updated_at_ms: number;
+}
+
+export type CrawlEvent =
+  | { type: "progress"; visited: number; queued: number; last_url: string }
+  | { type: "finished"; visited: number; stopped: boolean };
+
+export type ActiveScanEvent =
+  | { type: "progress"; done: number; total: number }
+  | { type: "finished"; findings: number; stopped: boolean }
+  | { type: "error"; message: string };

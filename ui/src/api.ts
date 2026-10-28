@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CaInfo, ConfigView, DiffMode, DiffSeg, HistoryFilter, InterceptItem, MatchReplaceRule, PluginManifest, ProjectMeta, ProxyStatus, ScopeRule, SequencerReport, SiteNode, TrafficStats,
   AttackEvent, DecodeOp, Generator, IntruderConfig, PreviewResult, RequestSpec, SendResult, StepResult, TransactionSummary, TransactionView, WsMessage,
+  Annotation, Finding, FindingUpdate, NewFinding,
 } from "./types";
 
 export const api = {
@@ -21,6 +22,19 @@ export const api = {
   historyClear: () => invoke<void>("history_clear"),
   siteMap: () => invoke<SiteNode[]>("site_map"),
   trafficStats: () => invoke<TrafficStats>("traffic_stats"),
+  crawlerStart: (seed: string) => invoke<void>("crawler_start", { seed }),
+  crawlerStop: () => invoke<void>("crawler_stop"),
+  activeScanStart: (transactionId: number) => invoke<void>("active_scan_start", { transactionId }),
+  activeScanStop: () => invoke<void>("active_scan_stop"),
+  findingsList: () => invoke<Finding[]>("findings_list"),
+  findingCreate: (finding: NewFinding) => invoke<Finding>("finding_create", { finding }),
+  findingUpdate: (id: number, update: FindingUpdate) =>
+    invoke<Finding | null>("finding_update", { id, update }),
+  findingDelete: (id: number) => invoke<boolean>("finding_delete", { id }),
+  annotations: () => invoke<Annotation[]>("annotations"),
+  annotationSet: (transactionId: number, color: string | null, note: string | null) =>
+    invoke<void>("annotation_set", { transactionId, color, note }),
+  findingsReport: (format: "json" | "html") => invoke<string>("findings_report", { format }),
   projectInfo: () => invoke<ProjectMeta>("project_info"),
   projectSetName: (name: string) => invoke<ProjectMeta>("project_set_name", { name }),
   projectBackup: (path: string) => invoke<string>("project_backup", { path }),
@@ -89,4 +103,10 @@ export const events = {
     listen<InterceptItem>("intercept-request", (e) => cb(e.payload)),
   onBappOutput: (cb: (o: import("./types").BappOutput) => void): Promise<UnlistenFn> =>
     listen<import("./types").BappOutput>("bapp-output", (e) => cb(e.payload)),
+  onFinding: (cb: (f: Finding) => void): Promise<UnlistenFn> =>
+    listen<Finding>("finding-added", (e) => cb(e.payload)),
+  onCrawl: (cb: (ev: import("./types").CrawlEvent) => void): Promise<UnlistenFn> =>
+    listen<import("./types").CrawlEvent>("crawl-progress", (e) => cb(e.payload)),
+  onScan: (cb: (ev: import("./types").ActiveScanEvent) => void): Promise<UnlistenFn> =>
+    listen<import("./types").ActiveScanEvent>("scan-progress", (e) => cb(e.payload)),
 };

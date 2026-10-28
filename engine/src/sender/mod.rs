@@ -5,7 +5,7 @@
 
 use crate::{
     config::UpstreamTlsMode,
-    core::{CapturedResponse, Header, HttpService, ResponseView},
+    core::{CapturedRequest, CapturedResponse, Header, HttpService, ResponseView, Transaction},
     proxy,
 };
 use anyhow::{Context, Result};
@@ -19,8 +19,9 @@ use hyper_util::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    net::SocketAddr,
     str::FromStr,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// A request to send, as the Repeater editor describes it.
@@ -76,15 +77,42 @@ impl Sender {
         })
     }
 
+    /// Send a request and return the response view + timing (Repeater).
     pub async fn send(&self, spec: RequestSpec) -> Result<SendResult> {
-        tokio::time::timeout(self.timeout, self.send_inner(spec))
+        let addr = "127.0.0.1:0".parse().expect("valid loopback addr");
+        let txn = self.send_transaction(spec, 0, addr).await?;
+        let response = txn
+            .response
+            .as_ref()
+            .map(ResponseView::from)
+            .context("no response captured")?;
+        Ok(SendResult {
+            response,
+            duration_ms: txn.duration.as_millis() as u64,
+        })
+    }
+
+    /// Send a request and return the full [`Transaction`] (request + response),
+    /// so callers can feed it into the capture pipeline (crawler, active scanner).
+    pub async fn send_transaction(
+        &self,
+        spec: RequestSpec,
+        id: u64,
+        client_addr: SocketAddr,
+    ) -> Result<Transaction> {
+        tokio::time::timeout(self.timeout, self.send_inner(spec, id, client_addr))
             .await
             .map_err(|_| {
                 anyhow::anyhow!("request timed out after {} ms", self.timeout.as_millis())
             })?
     }
 
-    async fn send_inner(&self, spec: RequestSpec) -> Result<SendResult> {
+    async fn send_inner(
+        &self,
+        spec: RequestSpec,
+        id: u64,
+        client_addr: SocketAddr,
+    ) -> Result<Transaction> {
         let method = Method::from_str(spec.method.trim())
             .with_context(|| format!("invalid method {:?}", spec.method))?;
         let uri_str = format!("{}{}", spec.service.origin(), spec.target);
@@ -97,8 +125,25 @@ impl Sender {
             }
             builder = builder.header(h.name.as_str(), h.value.as_str());
         }
-        let body = Bytes::from(spec.body.into_bytes());
-        let request = builder.body(Full::new(body)).context("building request")?;
+        let body_bytes = Bytes::from(spec.body.clone().into_bytes());
+        let request = builder
+            .body(Full::new(body_bytes.clone()))
+            .context("building request")?;
+
+        // Capture the request we're about to send, for the history/scan pipeline.
+        let captured_req = CapturedRequest {
+            id,
+            client_addr,
+            service: spec.service.clone(),
+            method: spec.method.clone(),
+            target: spec.target.clone(),
+            version: "HTTP/1.1".into(),
+            headers: spec.headers.clone(),
+            body_len: body_bytes.len(),
+            body: body_bytes,
+            body_complete: true,
+            started_at: SystemTime::now(),
+        };
 
         let started = Instant::now();
         let response = self
@@ -106,7 +151,7 @@ impl Sender {
             .request(request)
             .await
             .with_context(|| format!("sending request to {}", spec.service.origin()))?;
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let duration = started.elapsed();
 
         let (parts, mut incoming) = response.into_parts();
 
@@ -138,9 +183,11 @@ impl Sender {
         }
         let captured =
             CapturedResponse::from_parts(&parts, Bytes::from(retained), wire_len, complete);
-        Ok(SendResult {
-            response: ResponseView::from(&captured),
-            duration_ms,
+        Ok(Transaction {
+            request: captured_req,
+            response: Some(captured),
+            error: None,
+            duration,
         })
     }
 }
