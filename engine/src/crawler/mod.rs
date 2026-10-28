@@ -55,7 +55,10 @@ pub async fn run_crawl(
     sink: Arc<dyn Fn(CrawlEvent) + Send + Sync>,
 ) {
     let Some(seed_host) = host_of(&seed) else {
-        sink(CrawlEvent::Finished { visited: 0, stopped: true });
+        sink(CrawlEvent::Finished {
+            visited: 0,
+            stopped: true,
+        });
         return;
     };
     let concurrency = opts.concurrency.max(1);
@@ -155,8 +158,14 @@ fn spec_for(url: &str) -> Option<RequestSpec> {
         method: "GET".into(),
         target,
         headers: vec![
-            Header { name: "User-Agent".into(), value: "Shrike-Crawler".into() },
-            Header { name: "Accept".into(), value: "text/html,*/*".into() },
+            Header {
+                name: "User-Agent".into(),
+                value: "Shrike-Crawler".into(),
+            },
+            Header {
+                name: "Accept".into(),
+                value: "text/html,*/*".into(),
+            },
         ],
         body: String::new(),
     })
@@ -164,7 +173,10 @@ fn spec_for(url: &str) -> Option<RequestSpec> {
 
 /// Host (authority without userinfo/port) of a URL, lowercased.
 fn host_of(url: &str) -> Option<String> {
-    Uri::from_str(url).ok()?.host().map(|h| h.to_ascii_lowercase())
+    Uri::from_str(url)
+        .ok()?
+        .host()
+        .map(|h| h.to_ascii_lowercase())
 }
 
 /// Drop the fragment; leave scheme/host/path/query intact.
@@ -211,7 +223,9 @@ fn extract_links(base: &str, txn: &crate::core::Transaction) -> Vec<String> {
             if let Some(end) = val.find(quote) {
                 let raw = &val[..end];
                 if !raw.is_empty()
-                    && !SKIP_SCHEMES.iter().any(|s| raw.to_ascii_lowercase().starts_with(s))
+                    && !SKIP_SCHEMES
+                        .iter()
+                        .any(|s| raw.to_ascii_lowercase().starts_with(s))
                     && let Some(abs) = resolve(base, raw)
                 {
                     out.push(abs);
@@ -254,10 +268,19 @@ mod tests {
     #[test]
     fn resolves_relative_absolute_and_root_links() {
         let base = "https://lab.test/a/b/page.html";
-        assert_eq!(resolve(base, "https://x.test/y").unwrap(), "https://x.test/y");
+        assert_eq!(
+            resolve(base, "https://x.test/y").unwrap(),
+            "https://x.test/y"
+        );
         assert_eq!(resolve(base, "/top").unwrap(), "https://lab.test/top");
-        assert_eq!(resolve(base, "sib.html").unwrap(), "https://lab.test/a/b/sib.html");
-        assert_eq!(resolve(base, "//cdn.test/x.js").unwrap(), "https://cdn.test/x.js");
+        assert_eq!(
+            resolve(base, "sib.html").unwrap(),
+            "https://lab.test/a/b/sib.html"
+        );
+        assert_eq!(
+            resolve(base, "//cdn.test/x.js").unwrap(),
+            "https://cdn.test/x.js"
+        );
     }
 
     #[test]
@@ -281,7 +304,8 @@ mod tests {
         let html = br#"<a href="/login">x</a><script src="app.js"></script>
             <a href="javascript:void(0)">no</a><a href="mailto:a@b">no</a>
             <form action="https://lab.test/submit">"#;
-        let response = CapturedResponse::from_parts(&sp, Bytes::from_static(html), html.len(), true);
+        let response =
+            CapturedResponse::from_parts(&sp, Bytes::from_static(html), html.len(), true);
         let txn = Transaction {
             request,
             response: Some(response),
@@ -292,7 +316,11 @@ mod tests {
         assert!(links.contains(&"https://lab.test/login".to_string()));
         assert!(links.contains(&"https://lab.test/app.js".to_string()));
         assert!(links.contains(&"https://lab.test/submit".to_string()));
-        assert!(!links.iter().any(|l| l.contains("javascript") || l.contains("mailto")));
+        assert!(
+            !links
+                .iter()
+                .any(|l| l.contains("javascript") || l.contains("mailto"))
+        );
     }
 
     #[test]

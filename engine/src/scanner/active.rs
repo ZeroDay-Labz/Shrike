@@ -79,8 +79,14 @@ fn check_set() -> Vec<Check> {
             severity: Severity::High,
             confidence: Confidence::Firm,
             probes: vec![
-                Probe { value: "'".into(), detect: Detect::Signature(SQL_ERRORS) },
-                Probe { value: "\"".into(), detect: Detect::Signature(SQL_ERRORS) },
+                Probe {
+                    value: "'".into(),
+                    detect: Detect::Signature(SQL_ERRORS),
+                },
+                Probe {
+                    value: "\"".into(),
+                    detect: Detect::Signature(SQL_ERRORS),
+                },
             ],
         },
         Check {
@@ -90,8 +96,14 @@ fn check_set() -> Vec<Check> {
             confidence: Confidence::Firm,
             // If the engine evaluates it, 7*7 shows up as 49 between the markers.
             probes: vec![
-                Probe { value: "shr{{7*7}}ike".into(), detect: Detect::Signature(SSTI_HIT) },
-                Probe { value: "shr${7*7}ike".into(), detect: Detect::Signature(SSTI_HIT) },
+                Probe {
+                    value: "shr{{7*7}}ike".into(),
+                    detect: Detect::Signature(SSTI_HIT),
+                },
+                Probe {
+                    value: "shr${7*7}ike".into(),
+                    detect: Detect::Signature(SSTI_HIT),
+                },
             ],
         },
         Check {
@@ -100,8 +112,14 @@ fn check_set() -> Vec<Check> {
             severity: Severity::High,
             confidence: Confidence::Firm,
             probes: vec![
-                Probe { value: "../../../../../../etc/passwd".into(), detect: Detect::Signature(PASSWD) },
-                Probe { value: "..%2f..%2f..%2f..%2fetc%2fpasswd".into(), detect: Detect::Signature(PASSWD) },
+                Probe {
+                    value: "../../../../../../etc/passwd".into(),
+                    detect: Detect::Signature(PASSWD),
+                },
+                Probe {
+                    value: "..%2f..%2f..%2f..%2fetc%2fpasswd".into(),
+                    detect: Detect::Signature(PASSWD),
+                },
             ],
         },
         Check {
@@ -111,8 +129,14 @@ fn check_set() -> Vec<Check> {
             confidence: Confidence::Firm,
             // A shell metachar + echo; the unique token appears if the shell ran it.
             probes: vec![
-                Probe { value: "x;echo shrikeCMD9z".into(), detect: Detect::Signature(CMD_HIT) },
-                Probe { value: "x|echo shrikeCMD9z".into(), detect: Detect::Signature(CMD_HIT) },
+                Probe {
+                    value: "x;echo shrikeCMD9z".into(),
+                    detect: Detect::Signature(CMD_HIT),
+                },
+                Probe {
+                    value: "x|echo shrikeCMD9z".into(),
+                    detect: Detect::Signature(CMD_HIT),
+                },
             ],
         },
     ]
@@ -153,11 +177,19 @@ pub fn insertion_points(spec: &RequestSpec) -> Vec<InsertionPoint> {
     let mut pts = Vec::new();
     let (_, query) = split_target(&spec.target);
     for (i, (name, _)) in parse_pairs(query).iter().enumerate() {
-        pts.push(InsertionPoint { name: name.clone(), kind: PointKind::Query, index: i });
+        pts.push(InsertionPoint {
+            name: name.clone(),
+            kind: PointKind::Query,
+            index: i,
+        });
     }
     if is_urlencoded(spec) {
         for (i, (name, _)) in parse_pairs(&spec.body).iter().enumerate() {
-            pts.push(InsertionPoint { name: name.clone(), kind: PointKind::Body, index: i });
+            pts.push(InsertionPoint {
+                name: name.clone(),
+                kind: PointKind::Body,
+                index: i,
+            });
         }
     }
     pts
@@ -189,7 +221,9 @@ fn apply(spec: &RequestSpec, point: &InsertionPoint, payload: &str) -> RequestSp
 fn is_urlencoded(spec: &RequestSpec) -> bool {
     spec.headers.iter().any(|h| {
         h.name.eq_ignore_ascii_case("content-type")
-            && h.value.to_ascii_lowercase().contains("application/x-www-form-urlencoded")
+            && h.value
+                .to_ascii_lowercase()
+                .contains("application/x-www-form-urlencoded")
     })
 }
 
@@ -256,7 +290,10 @@ pub async fn run_active_scan(
     let checks = check_set();
     let total: usize = points.len() * checks.iter().map(|c| c.probes.len()).sum::<usize>();
     if total == 0 {
-        sink(ActiveScanEvent::Finished { findings: 0, stopped: false });
+        sink(ActiveScanEvent::Finished {
+            findings: 0,
+            stopped: false,
+        });
         return Vec::new();
     }
 
@@ -273,8 +310,13 @@ pub async fn run_active_scan(
                 let stop = Arc::clone(&stop);
                 let done = Arc::clone(&done);
                 let sink = Arc::clone(&sink);
-                let (cid, title, sev, conf, param) =
-                    (check.id, check.title, check.severity, check.confidence, point.name.clone());
+                let (cid, title, sev, conf, param) = (
+                    check.id,
+                    check.title,
+                    check.severity,
+                    check.confidence,
+                    point.name.clone(),
+                );
                 let detect_strat = probe.detect;
                 set.spawn(async move {
                     if stop.load(Ordering::Relaxed) {
@@ -315,13 +357,18 @@ pub async fn run_active_scan(
     let mut hits: Vec<Hit> = Vec::new();
     while let Some(res) = set.join_next().await {
         if let Ok(Some(hit)) = res
-            && !hits.iter().any(|h| h.check_id == hit.check_id && h.param == hit.param)
+            && !hits
+                .iter()
+                .any(|h| h.check_id == hit.check_id && h.param == hit.param)
         {
             hits.push(hit);
         }
     }
     let stopped = stop.load(Ordering::Relaxed);
-    sink(ActiveScanEvent::Finished { findings: hits.len(), stopped });
+    sink(ActiveScanEvent::Finished {
+        findings: hits.len(),
+        stopped,
+    });
     hits
 }
 
@@ -336,11 +383,22 @@ mod tests {
 
     fn spec(target: &str, body: &str, form: bool) -> RequestSpec {
         RequestSpec {
-            service: HttpService { host: "lab.test".into(), port: 443, secure: true },
-            method: if body.is_empty() { "GET".into() } else { "POST".into() },
+            service: HttpService {
+                host: "lab.test".into(),
+                port: 443,
+                secure: true,
+            },
+            method: if body.is_empty() {
+                "GET".into()
+            } else {
+                "POST".into()
+            },
             target: target.into(),
             headers: if form {
-                vec![Header { name: "Content-Type".into(), value: "application/x-www-form-urlencoded".into() }]
+                vec![Header {
+                    name: "Content-Type".into(),
+                    value: "application/x-www-form-urlencoded".into(),
+                }]
             } else {
                 vec![]
             },
@@ -370,15 +428,30 @@ mod tests {
         let mutated = apply(&s, q, "x\"'<9z>");
         assert!(mutated.target.starts_with("/search?q="));
         assert!(mutated.target.contains("page=1"), "other params untouched");
-        assert!(mutated.target.contains("%22%27%3C9z%3E"), "payload is percent-encoded");
+        assert!(
+            mutated.target.contains("%22%27%3C9z%3E"),
+            "payload is percent-encoded"
+        );
     }
 
     #[test]
     fn detection_strategies() {
-        assert!(detect(&Detect::Reflect { marker: "\"'<9z>" }, "pre \"'<9z> post"));
-        assert!(!detect(&Detect::Reflect { marker: "\"'<9z>" }, "encoded &quot;&#39;&lt;9z&gt;"));
-        assert!(detect(&Detect::Signature(SQL_ERRORS), "You have an error in your SQL syntax; ..."));
+        assert!(detect(
+            &Detect::Reflect { marker: "\"'<9z>" },
+            "pre \"'<9z> post"
+        ));
+        assert!(!detect(
+            &Detect::Reflect { marker: "\"'<9z>" },
+            "encoded &quot;&#39;&lt;9z&gt;"
+        ));
+        assert!(detect(
+            &Detect::Signature(SQL_ERRORS),
+            "You have an error in your SQL syntax; ..."
+        ));
         assert!(detect(&Detect::Signature(SSTI_HIT), "out: shr49ike done"));
-        assert!(detect(&Detect::Signature(PASSWD), "root:x:0:0:root:/root:/bin/bash"));
+        assert!(detect(
+            &Detect::Signature(PASSWD),
+            "root:x:0:0:root:/root:/bin/bash"
+        ));
     }
 }

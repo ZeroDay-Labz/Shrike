@@ -100,7 +100,9 @@ pub fn run_checks(txn: &Transaction) -> Vec<Hit> {
 }
 
 fn has_header(resp: &crate::core::CapturedResponse, name: &str) -> bool {
-    resp.headers.iter().any(|h| h.name.eq_ignore_ascii_case(name))
+    resp.headers
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case(name))
 }
 
 fn security_header_hits(resp: &crate::core::CapturedResponse, secure: bool) -> Vec<Hit> {
@@ -116,9 +118,10 @@ fn security_header_hits(resp: &crate::core::CapturedResponse, secure: bool) -> V
             title: "Missing Content-Security-Policy".into(),
             severity: Severity::Low,
             confidence: Confidence::Firm,
-            detail: "The response has no Content-Security-Policy header, so the browser applies no \
+            detail:
+                "The response has no Content-Security-Policy header, so the browser applies no \
                      script/style source restrictions."
-                .into(),
+                    .into(),
             param: None,
         });
     }
@@ -153,8 +156,9 @@ fn security_header_hits(resp: &crate::core::CapturedResponse, secure: bool) -> V
             title: "No clickjacking protection".into(),
             severity: Severity::Low,
             confidence: Confidence::Firm,
-            detail: "Neither X-Frame-Options nor CSP frame-ancestors is set; the page can be framed."
-                .into(),
+            detail:
+                "Neither X-Frame-Options nor CSP frame-ancestors is set; the page can be framed."
+                    .into(),
             param: None,
         });
     }
@@ -163,9 +167,19 @@ fn security_header_hits(resp: &crate::core::CapturedResponse, secure: bool) -> V
 
 fn cookie_flag_hits(resp: &crate::core::CapturedResponse, secure: bool) -> Vec<Hit> {
     let mut v = Vec::new();
-    for h in resp.headers.iter().filter(|h| h.name.eq_ignore_ascii_case("set-cookie")) {
+    for h in resp
+        .headers
+        .iter()
+        .filter(|h| h.name.eq_ignore_ascii_case("set-cookie"))
+    {
         let lower = h.value.to_ascii_lowercase();
-        let name = h.value.split('=').next().unwrap_or("cookie").trim().to_string();
+        let name = h
+            .value
+            .split('=')
+            .next()
+            .unwrap_or("cookie")
+            .trim()
+            .to_string();
         let mut missing: Vec<&str> = Vec::new();
         if secure && !lower.contains("secure") {
             missing.push("Secure");
@@ -182,7 +196,10 @@ fn cookie_flag_hits(resp: &crate::core::CapturedResponse, secure: bool) -> Vec<H
                 title: format!("Cookie '{name}' missing {}", missing.join(", ")),
                 severity: Severity::Low,
                 confidence: Confidence::Firm,
-                detail: format!("Set-Cookie for '{name}' is missing: {}.", missing.join(", ")),
+                detail: format!(
+                    "Set-Cookie for '{name}' is missing: {}.",
+                    missing.join(", ")
+                ),
                 param: Some(name),
             });
         }
@@ -229,10 +246,10 @@ fn request_params(txn: &Transaction) -> Vec<(String, String)> {
     if let Some(q) = txn.request.query() {
         out.extend(parse_urlencoded(q));
     }
-    let is_form = txn
-        .request
-        .header("content-type")
-        .is_some_and(|c| c.to_ascii_lowercase().contains("application/x-www-form-urlencoded"));
+    let is_form = txn.request.header("content-type").is_some_and(|c| {
+        c.to_ascii_lowercase()
+            .contains("application/x-www-form-urlencoded")
+    });
     if is_form {
         let body = String::from_utf8_lossy(&txn.request.body);
         out.extend(parse_urlencoded(&body));
@@ -291,7 +308,11 @@ fn info_disclosure_hits(resp: &crate::core::CapturedResponse) -> Vec<Hit> {
             && val.chars().any(|c| c.is_ascii_digit())
         {
             v.push(Hit {
-                check_id: if header == "server" { "banner-server" } else { "banner-powered-by" },
+                check_id: if header == "server" {
+                    "banner-server"
+                } else {
+                    "banner-powered-by"
+                },
                 title: format!("Version banner in {header}"),
                 severity: Severity::Info,
                 confidence: Confidence::Firm,
@@ -372,15 +393,24 @@ mod tests {
             .body(())
             .unwrap()
             .into_parts();
-        let request =
-            CapturedRequest::from_parts(1, "127.0.0.1:9000".parse().unwrap(), &rp, Bytes::new(), 0, true)
-                .unwrap();
-        let mut rb = hyper::Response::builder().status(200).header("content-type", ctype);
+        let request = CapturedRequest::from_parts(
+            1,
+            "127.0.0.1:9000".parse().unwrap(),
+            &rp,
+            Bytes::new(),
+            0,
+            true,
+        )
+        .unwrap();
+        let mut rb = hyper::Response::builder()
+            .status(200)
+            .header("content-type", ctype);
         for (k, val) in resp_headers {
             rb = rb.header(*k, *val);
         }
         let (sp, _) = rb.body(()).unwrap().into_parts();
-        let response = CapturedResponse::from_parts(&sp, Bytes::copy_from_slice(body), body.len(), true);
+        let response =
+            CapturedResponse::from_parts(&sp, Bytes::copy_from_slice(body), body.len(), true);
         Transaction {
             request,
             response: Some(response),
@@ -397,7 +427,12 @@ mod tests {
     fn flags_missing_security_headers_on_html() {
         let t = txn("https://lab.test/", "text/html", &[], b"<html></html>");
         let got = ids(&run_checks(&t));
-        for want in ["missing-csp", "missing-hsts", "missing-xcto", "missing-framing"] {
+        for want in [
+            "missing-csp",
+            "missing-hsts",
+            "missing-xcto",
+            "missing-framing",
+        ] {
             assert!(got.contains(&want), "expected {want} in {got:?}");
         }
     }
@@ -408,7 +443,10 @@ mod tests {
             "https://lab.test/",
             "text/html",
             &[
-                ("content-security-policy", "default-src 'self'; frame-ancestors 'none'"),
+                (
+                    "content-security-policy",
+                    "default-src 'self'; frame-ancestors 'none'",
+                ),
                 ("strict-transport-security", "max-age=63072000"),
                 ("x-content-type-options", "nosniff"),
             ],
@@ -418,7 +456,10 @@ mod tests {
         assert!(!got.contains(&"missing-csp"));
         assert!(!got.contains(&"missing-hsts"));
         assert!(!got.contains(&"missing-xcto"));
-        assert!(!got.contains(&"missing-framing"), "CSP frame-ancestors covers framing");
+        assert!(
+            !got.contains(&"missing-framing"),
+            "CSP frame-ancestors covers framing"
+        );
     }
 
     #[test]
@@ -429,7 +470,10 @@ mod tests {
             &[("set-cookie", "sid=abc; Path=/")],
             b"<html></html>",
         );
-        let hit = run_checks(&t).into_iter().find(|h| h.check_id == "cookie-flags").unwrap();
+        let hit = run_checks(&t)
+            .into_iter()
+            .find(|h| h.check_id == "cookie-flags")
+            .unwrap();
         assert_eq!(hit.param.as_deref(), Some("sid"));
         assert!(hit.title.contains("Secure"));
         assert!(hit.title.contains("HttpOnly"));
@@ -444,7 +488,9 @@ mod tests {
             &[("content-security-policy", "x")],
             b"<html>results for shrike_marker here</html>",
         );
-        let hit = run_checks(&t).into_iter().find(|h| h.check_id == "reflected-input");
+        let hit = run_checks(&t)
+            .into_iter()
+            .find(|h| h.check_id == "reflected-input");
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().param.as_deref(), Some("q"));
     }
@@ -457,7 +503,11 @@ mod tests {
             &[("content-security-policy", "x")],
             b"<html>12345 ab</html>",
         );
-        assert!(run_checks(&t).iter().all(|h| h.check_id != "reflected-input"));
+        assert!(
+            run_checks(&t)
+                .iter()
+                .all(|h| h.check_id != "reflected-input")
+        );
     }
 
     #[test]
@@ -465,9 +515,13 @@ mod tests {
         let t = txn(
             "https://lab.test/x",
             "text/html",
-            &[("server", "Apache/2.4.1"), ("content-security-policy", "x"),
-              ("strict-transport-security", "x"), ("x-content-type-options", "x"),
-              ("x-frame-options", "DENY")],
+            &[
+                ("server", "Apache/2.4.1"),
+                ("content-security-policy", "x"),
+                ("strict-transport-security", "x"),
+                ("x-content-type-options", "x"),
+                ("x-frame-options", "DENY"),
+            ],
             b"<html>java.lang.NullPointerException at ...</html>",
         );
         let got = ids(&run_checks(&t));
@@ -477,10 +531,19 @@ mod tests {
 
     #[test]
     fn detects_mixed_content_only_on_https() {
-        let https = txn("https://lab.test/", "text/html", &[("content-security-policy", "x")],
-            b"<img src=\"http://cdn.test/a.png\">");
+        let https = txn(
+            "https://lab.test/",
+            "text/html",
+            &[("content-security-policy", "x")],
+            b"<img src=\"http://cdn.test/a.png\">",
+        );
         assert!(ids(&run_checks(&https)).contains(&"mixed-content"));
-        let http = txn("http://lab.test/", "text/html", &[], b"<img src=\"http://cdn.test/a.png\">");
+        let http = txn(
+            "http://lab.test/",
+            "text/html",
+            &[],
+            b"<img src=\"http://cdn.test/a.png\">",
+        );
         assert!(!ids(&run_checks(&http)).contains(&"mixed-content"));
     }
 }

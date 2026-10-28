@@ -11,7 +11,9 @@ use crate::core::{
     TrafficEvent, TrafficSink, Transaction, TransactionSummary, TransactionView, WsDirection,
     WsMessageEvent, epoch_millis,
 };
-use crate::findings::{Annotation, Confidence, Finding, FindingStatus, FindingUpdate, NewFinding, Severity};
+use crate::findings::{
+    Annotation, Confidence, Finding, FindingStatus, FindingUpdate, NewFinding, Severity,
+};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params, types::Value};
 use serde::{Deserialize, Serialize};
@@ -726,9 +728,11 @@ impl Store {
     fn append_finding_evidence(&self, id: u64, ids: &[u64]) -> Result<()> {
         let conn = self.read.lock().expect("store read lock");
         let current: Option<String> = conn
-            .query_row("SELECT txn_ids FROM findings WHERE id = ?", [id as i64], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT txn_ids FROM findings WHERE id = ?",
+                [id as i64],
+                |r| r.get(0),
+            )
             .optional()?;
         let Some(json) = current else { return Ok(()) };
         let mut list: Vec<u64> = serde_json::from_str(&json).unwrap_or_default();
@@ -746,7 +750,10 @@ impl Store {
                 list.truncate(MAX_EVIDENCE);
             }
             let j = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
-            conn.execute("UPDATE findings SET txn_ids = ? WHERE id = ?", params![j, id as i64])?;
+            conn.execute(
+                "UPDATE findings SET txn_ids = ? WHERE id = ?",
+                params![j, id as i64],
+            )?;
         }
         Ok(())
     }
@@ -866,9 +873,8 @@ impl Store {
     /// Every annotation, for overlaying highlights/notes onto history rows.
     pub fn annotations_all(&self) -> Result<Vec<Annotation>> {
         let conn = self.read.lock().expect("store read lock");
-        let mut stmt = conn.prepare(
-            "SELECT transaction_id, color, note, updated_at_ms FROM annotations",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT transaction_id, color, note, updated_at_ms FROM annotations")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(Annotation {
@@ -1598,13 +1604,18 @@ mod tests {
         assert!(first.is_some(), "first insert creates the finding");
         // Same key again: no new row, but the new evidence id is merged in.
         let dup = store.finding_create_deduped(mk(2), key).unwrap();
-        assert!(dup.is_none(), "duplicate key does not create a second finding");
+        assert!(
+            dup.is_none(),
+            "duplicate key does not create a second finding"
+        );
         let all = store.findings_list().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].transaction_ids, vec![1, 2], "evidence merged");
 
         // A different key is a distinct finding; manual findings (null key) never dedupe.
-        store.finding_create_deduped(mk(3), "missing-hsts|lab.test|/login").unwrap();
+        store
+            .finding_create_deduped(mk(3), "missing-hsts|lab.test|/login")
+            .unwrap();
         store.finding_create(mk(4)).unwrap();
         store.finding_create(mk(5)).unwrap();
         assert_eq!(store.findings_list().unwrap().len(), 4);
@@ -1624,9 +1635,7 @@ mod tests {
         assert_eq!(all[0].color.as_deref(), Some("red"));
 
         // upsert overwrites
-        store
-            .annotation_set(5, Some("amber".into()), None)
-            .unwrap();
+        store.annotation_set(5, Some("amber".into()), None).unwrap();
         let a = &store.annotations_all().unwrap()[0];
         assert_eq!(a.color.as_deref(), Some("amber"));
         assert_eq!(a.note, None);

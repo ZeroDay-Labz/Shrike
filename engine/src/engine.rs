@@ -35,7 +35,6 @@ use std::{
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle};
 use tracing::{info, warn};
 
-
 struct RunningProxy {
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<Result<()>>,

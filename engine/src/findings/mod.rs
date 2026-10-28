@@ -210,7 +210,11 @@ pub struct SeverityCount {
 
 impl Report {
     /// Build a report from a finding set, computing the severity summary.
-    pub fn new(project: impl Into<String>, generated_at_ms: u64, mut findings: Vec<Finding>) -> Report {
+    pub fn new(
+        project: impl Into<String>,
+        generated_at_ms: u64,
+        mut findings: Vec<Finding>,
+    ) -> Report {
         // Most severe first, then most recently updated.
         findings.sort_by(|a, b| {
             b.severity

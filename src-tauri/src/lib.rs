@@ -332,7 +332,10 @@ fn active_scan_start(state: State<AppState>, app: AppHandle, transaction_id: u64
         std::sync::Arc::new(move |ev| {
             let _ = app2.emit("scan-progress", ev);
         });
-    state.engine.active_scan_start(transaction_id, sink).map_err(err)
+    state
+        .engine
+        .active_scan_start(transaction_id, sink)
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -873,13 +876,21 @@ fn resolve_bundled_chromium(app: &AppHandle) -> Option<std::path::PathBuf> {
         bases.push(res.join("chromium"));
     }
     // Flatpak: resources are installed next to the binary's share prefix.
-    bases.push(std::path::PathBuf::from("/app/share/shrike/resources/chromium"));
+    bases.push(std::path::PathBuf::from(
+        "/app/share/shrike/resources/chromium",
+    ));
     // Dev: search repo ancestors of cwd and the executable.
     if let Ok(cwd) = std::env::current_dir() {
-        bases.extend(cwd.ancestors().map(|p| p.join("src-tauri/resources/chromium")));
+        bases.extend(
+            cwd.ancestors()
+                .map(|p| p.join("src-tauri/resources/chromium")),
+        );
     }
     if let Ok(exe) = std::env::current_exe() {
-        bases.extend(exe.ancestors().map(|p| p.join("src-tauri/resources/chromium")));
+        bases.extend(
+            exe.ancestors()
+                .map(|p| p.join("src-tauri/resources/chromium")),
+        );
     }
 
     bases

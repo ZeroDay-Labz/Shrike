@@ -65,13 +65,17 @@ async fn through_proxy(proxy: SocketAddr, target: SocketAddr, path: &str) -> Str
 fn wait_for_rows(engine: &Engine, want: usize) -> Vec<shrike_engine::core::TransactionSummary> {
     for _ in 0..150 {
         engine.store().flush().ok();
-        let rows = engine.history_page(&HistoryFilter::default(), 50, 0).unwrap();
+        let rows = engine
+            .history_page(&HistoryFilter::default(), 50, 0)
+            .unwrap();
         if rows.len() >= want {
             return rows;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    engine.history_page(&HistoryFilter::default(), 50, 0).unwrap()
+    engine
+        .history_page(&HistoryFilter::default(), 50, 0)
+        .unwrap()
 }
 
 #[test]
@@ -470,7 +474,9 @@ fn active_scan_finds_reflected_xss_and_is_scope_gated() {
     let id = {
         let mut found = None;
         for _ in 0..50 {
-            let rows = engine.history_page(&HistoryFilter::default(), 50, 0).unwrap();
+            let rows = engine
+                .history_page(&HistoryFilter::default(), 50, 0)
+                .unwrap();
             if let Some(r) = rows.iter().find(|r| r.url.contains("/search")) {
                 found = Some(r.id);
                 break;
@@ -481,8 +487,7 @@ fn active_scan_finds_reflected_xss_and_is_scope_gated() {
     };
 
     // Out of scope with an empty scope → refused.
-    let sink: Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> =
-        Arc::new(|_| {});
+    let sink: Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> = Arc::new(|_| {});
     assert!(
         engine.active_scan_start(id, Arc::clone(&sink)).is_err(),
         "active scan must refuse when scope is empty"
@@ -503,13 +508,18 @@ fn active_scan_finds_reflected_xss_and_is_scope_gated() {
             .into_iter()
             .map(|f| f.title)
             .collect();
-        if titles.iter().any(|t| t.to_lowercase().contains("cross-site")) {
+        if titles
+            .iter()
+            .any(|t| t.to_lowercase().contains("cross-site"))
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(30));
     }
     assert!(
-        titles.iter().any(|t| t.to_lowercase().contains("cross-site")),
+        titles
+            .iter()
+            .any(|t| t.to_lowercase().contains("cross-site")),
         "expected a reflected-XSS finding, got {titles:?}"
     );
 
