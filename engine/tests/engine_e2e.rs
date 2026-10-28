@@ -59,6 +59,21 @@ async fn through_proxy(proxy: SocketAddr, target: SocketAddr, path: &str) -> Str
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// Poll history until at least `want` rows are persisted (or time out). The
+/// capture path is async (proxy -> ingest bus -> store writer), so a single
+/// flush+read can race the bus dispatcher under load; polling is deterministic.
+fn wait_for_rows(engine: &Engine, want: usize) -> Vec<shrike_engine::core::TransactionSummary> {
+    for _ in 0..150 {
+        engine.store().flush().ok();
+        let rows = engine.history_page(&HistoryFilter::default(), 50, 0).unwrap();
+        if rows.len() >= want {
+            return rows;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    engine.history_page(&HistoryFilter::default(), 50, 0).unwrap()
+}
+
 #[test]
 fn engine_captures_traffic_into_history_store() {
     // A helper runtime drives the upstream server and the client so we never
@@ -80,11 +95,7 @@ fn engine_captures_traffic_into_history_store() {
     assert!(raw.starts_with("HTTP/1.1 200"), "proxied response: {raw:?}");
     assert!(raw.contains("hello GET /widgets"));
 
-    engine.store().flush().unwrap();
-
-    let rows = engine
-        .history_page(&HistoryFilter::default(), 50, 0)
-        .unwrap();
+    let rows = wait_for_rows(&engine, 1);
     assert_eq!(rows.len(), 1, "exactly one transaction recorded");
     let row = &rows[0];
     assert_eq!(row.method, "GET");
@@ -162,10 +173,7 @@ fn engine_refuses_out_of_scope_targets_when_enforcing() {
     );
     assert!(blocked.contains("out of scope"));
 
-    engine.store().flush().unwrap();
-    let rows = engine
-        .history_page(&HistoryFilter::default(), 50, 0)
-        .unwrap();
+    let rows = wait_for_rows(&engine, 2);
     assert_eq!(rows.len(), 2, "both attempts are recorded");
     let refused: Vec<_> = rows.iter().filter(|r| r.error.is_some()).collect();
     assert_eq!(refused.len(), 1, "the refused request carries an error");
