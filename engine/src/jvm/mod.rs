@@ -164,6 +164,35 @@ pub fn java_version(java: &Path) -> Option<String> {
     Some(first[start..end].to_string())
 }
 
+/// JPMS reflection openings legacy extensions need on a modern JDK (16+, hard
+/// on 25). Many BApps bundle Gson/Swing code that reflects into `java.desktop`
+/// and `java.base` internals (e.g. `java.awt.Color#value`); without these opens
+/// the JDK denies the access and the extension fails after loading. Mirrors the
+/// launcher flags such extensions were written to run under.
+const JVM_ADD_OPENS: &[&str] = &[
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+    "--add-opens=java.base/java.util=ALL-UNNAMED",
+    "--add-opens=java.base/java.text=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
+    "--add-opens=java.base/java.net=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.event=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.color=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.geom=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.table=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.text=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.plaf.basic=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.swing=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.font=ALL-UNNAMED",
+    "--add-opens=java.xml/com.sun.org.apache.xerces.internal.jaxp=ALL-UNNAMED",
+];
+
 fn classpath(rt: &JvmRuntime) -> String {
     let sep = if cfg!(windows) { ';' } else { ':' };
     let mut parts = vec![rt.host_jar.clone(), rt.montoya_jar.clone()];
@@ -184,6 +213,7 @@ fn classpath(rt: &JvmRuntime) -> String {
 /// extension keeps its Swing window open. Returns the running process.
 pub fn spawn(rt: &JvmRuntime, ext: &Path, mode: &str) -> Result<std::process::Child> {
     Command::new(&rt.java)
+        .args(JVM_ADD_OPENS)
         .arg("-cp")
         .arg(classpath(rt))
         .arg("shrike.host.Host")
@@ -205,6 +235,7 @@ pub fn spawn_streaming(
     on_line: impl Fn(String) + Send + 'static,
 ) -> Result<std::process::Child> {
     let mut child = Command::new(&rt.java)
+        .args(JVM_ADD_OPENS)
         .arg("-cp")
         .arg(classpath(rt))
         .arg("shrike.host.Host")
@@ -236,6 +267,7 @@ pub fn run_extension(
     timeout: Duration,
 ) -> Result<ExtensionLoad> {
     let mut child = Command::new(&rt.java)
+        .args(JVM_ADD_OPENS)
         .arg("-cp")
         .arg(classpath(rt))
         .arg("shrike.host.Host")
