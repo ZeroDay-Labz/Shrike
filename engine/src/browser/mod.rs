@@ -68,9 +68,18 @@ fn in_flatpak() -> bool {
 pub fn launch(cfg: &BrowserConfig) -> Result<Child> {
     std::fs::create_dir_all(&cfg.profile_dir)
         .with_context(|| format!("creating browser profile {}", cfg.profile_dir.display()))?;
-    Command::new(&cfg.chromium_bin)
-        .args(build_args(cfg))
-        .spawn()
+    let mut cmd = Command::new(&cfg.chromium_bin);
+    cmd.args(build_args(cfg));
+    // Bundled/portable Chromium builds can fail to locate the system fontconfig
+    // ("Cannot load default config file"), then render with poor fallback fonts.
+    // Point it at the system config when present and not already configured.
+    if std::env::var_os("FONTCONFIG_PATH").is_none() {
+        let sys = std::path::Path::new("/etc/fonts");
+        if sys.is_dir() {
+            cmd.env("FONTCONFIG_PATH", sys);
+        }
+    }
+    cmd.spawn()
         .with_context(|| format!("launching {}", cfg.chromium_bin.display()))
 }
 
