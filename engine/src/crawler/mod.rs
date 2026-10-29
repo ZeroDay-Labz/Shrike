@@ -94,6 +94,11 @@ pub async fn run_crawl(
 
         let mut set = tokio::task::JoinSet::new();
         for url in wave {
+            // Re-check scope immediately before sending: the operator may have
+            // tightened scope after this URL was queued.
+            if !allowed(&url, &seed_host, &scope) {
+                continue;
+            }
             let Some(spec) = spec_for(&url) else { continue };
             let sender = Arc::clone(&sender);
             let bus = bus.clone();
@@ -191,8 +196,10 @@ fn allowed(url: &str, seed_host: &str, scope: &RwLock<Scope>) -> bool {
     if !(h == seed_host) {
         return false;
     }
-    let s = scope.read().expect("scope lock");
-    s.is_empty() || s.in_scope_url(url)
+    // Fail closed: an empty scope admits nothing, matching the scope module's
+    // contract and every other automated tool. The seed is gated in
+    // `Engine::crawler_start`, so a running crawl never reaches here out of scope.
+    scope.read().expect("scope lock").in_scope_url(url)
 }
 
 const SKIP_SCHEMES: &[&str] = &["javascript:", "mailto:", "tel:", "data:", "#"];
@@ -324,9 +331,18 @@ mod tests {
     }
 
     #[test]
-    fn scope_gates_to_seed_host() {
-        let scope = RwLock::new(Scope::default());
+    fn scope_gates_to_seed_host_and_fails_closed_on_empty_scope() {
+        use crate::scope::ScopeRule;
+        // Empty scope admits nothing (fail closed), even for the seed host.
+        let empty = RwLock::new(Scope::default());
+        assert!(!allowed("https://lab.test/x", "lab.test", &empty));
+
+        // With the host in scope, same-host in-scope URLs are allowed; a
+        // different host is refused even though it is in scope.
+        let scope =
+            RwLock::new(Scope::from_rules(vec![ScopeRule::include_host("lab.test")]).unwrap());
         assert!(allowed("https://lab.test/x", "lab.test", &scope));
         assert!(!allowed("https://evil.test/x", "lab.test", &scope));
+        assert!(!allowed("https://other.test/x", "lab.test", &scope));
     }
 }

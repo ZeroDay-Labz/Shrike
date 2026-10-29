@@ -457,6 +457,22 @@ impl Engine {
         if seed.trim().is_empty() {
             return Err(anyhow!("enter a seed URL to crawl"));
         }
+        // Scope is a hard gate for automated traffic: a crawl sends requests, so
+        // refuse an empty scope or an out-of-scope seed before any fetch.
+        {
+            let scope = self.scope.read().expect("scope lock");
+            if scope.is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty — add the seed's host to the engagement scope before \
+                     crawling"
+                ));
+            }
+            if !scope.in_scope_url(seed.trim()) {
+                return Err(anyhow!(
+                    "the seed URL is outside the engagement scope; crawling is refused"
+                ));
+            }
+        }
         self.crawler_stop(); // cancel any in-flight crawl
         let cfg = self.config();
         let opts = crate::crawler::CrawlOptions {

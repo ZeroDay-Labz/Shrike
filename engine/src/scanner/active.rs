@@ -235,11 +235,17 @@ fn split_target(target: &str) -> (&str, &str) {
 }
 
 fn parse_pairs(s: &str) -> Vec<(String, String)> {
+    // Decode values here so `encode_pairs` re-encodes them exactly once. Without
+    // this, an existing `%20` in an untouched parameter became `%2520` whenever
+    // another parameter was injected, changing the request under test.
     s.split('&')
         .filter(|p| !p.is_empty())
         .map(|pair| {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (k.to_string(), v.to_string())
+            let v = percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned();
+            (k.to_string(), v)
         })
         .collect()
 }
@@ -323,6 +329,11 @@ pub async fn run_active_scan(
                         return None;
                     }
                     let _permit = sem.acquire().await.ok()?;
+                    // The user may have pressed Stop while this probe waited for a
+                    // permit — don't send attack traffic after cancellation.
+                    if stop.load(Ordering::Relaxed) {
+                        return None;
+                    }
                     let hit = match sender.send_transaction(spec, 0, loopback()).await {
                         Ok(txn) => {
                             let body = txn
@@ -404,6 +415,32 @@ mod tests {
             },
             body: body.into(),
         }
+    }
+
+    #[test]
+    fn injection_does_not_double_encode_untouched_params() {
+        // Two query params; one already carries a percent-encoded space.
+        let sp = spec("/search?q=a%20b&page=2", "", false);
+        let points = insertion_points(&sp);
+        // Inject a payload into `page`; `q` must survive unchanged on the wire.
+        let page = points.iter().find(|p| p.name == "page").unwrap();
+        let out = apply(&sp, page, "1' OR '1'='1");
+        assert!(
+            out.target.contains("q=a%20b"),
+            "untouched param must not be double-encoded: {}",
+            out.target
+        );
+        assert!(
+            !out.target.contains("%2520"),
+            "no double-encoding: {}",
+            out.target
+        );
+        // The payload itself is encoded exactly once (space -> %20, not %2520).
+        assert!(
+            out.target.contains("page=1%27%20OR"),
+            "payload encoded once: {}",
+            out.target
+        );
     }
 
     #[test]

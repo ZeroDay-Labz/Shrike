@@ -9,12 +9,13 @@ use shrike_engine::{
     Engine,
     config::{ProxyConfig, UpstreamTlsMode},
     core::{Header, HttpService},
+    crawler::CrawlEvent,
     intruder::{AttackEvent, AttackType, IntruderConfig},
     scope::ScopeRule,
     sender::RequestSpec,
     store::HistoryFilter,
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -236,6 +237,69 @@ fn capture_in_scope_only_forwards_everything_but_records_only_the_target() {
     assert!(rows[0].url.ends_with("/target"));
 
     engine.stop_proxy().unwrap();
+}
+
+/// Crawler scope is a hard gate: an empty scope and an out-of-scope seed are
+/// both refused before any request is sent; an in-scope seed is accepted.
+#[test]
+fn crawler_refuses_empty_scope_and_out_of_scope_seed() {
+    let helper = Runtime::new().unwrap();
+    let up = helper.block_on(spawn_upstream());
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        upstream_tls: UpstreamTlsMode::Verify,
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+    let noop = || Arc::new(|_: CrawlEvent| {}) as Arc<dyn Fn(CrawlEvent) + Send + Sync>;
+
+    // Empty scope -> refused (sends zero requests).
+    let err = engine
+        .crawler_start(format!("http://{up}/"), noop())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("scope is empty"), "empty-scope refusal: {err}");
+
+    // Scope set to a different host -> an out-of-scope seed is refused.
+    engine
+        .set_scope(vec![ScopeRule::include_host("in-scope.test")])
+        .unwrap();
+    let err = engine
+        .crawler_start(format!("http://{up}/"), noop())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("outside the engagement scope"),
+        "out-of-scope seed: {err}"
+    );
+
+    // Seed host in scope -> accepted, and the crawl completes.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    engine
+        .set_scope(vec![ScopeRule {
+            port: Some(up.port()),
+            ..ScopeRule::include_host("127.0.0.1")
+        }])
+        .unwrap();
+    engine
+        .crawler_start(
+            format!("http://{up}/"),
+            Arc::new(move |ev| {
+                if let CrawlEvent::Finished { .. } = ev {
+                    let _ = tx.lock().unwrap().send(());
+                }
+            }),
+        )
+        .expect("in-scope seed accepted");
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("crawl ran and finished");
+
+    let rows = wait_for_rows(&engine, 1);
+    assert_eq!(rows.len(), 1, "only the in-scope seed was fetched");
+    assert!(rows[0].url.contains(&up.to_string()));
 }
 
 /// Repeater path: the engine sends an edited request and returns the response.
