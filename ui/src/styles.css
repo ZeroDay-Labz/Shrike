@@ -860,3 +860,38 @@ body.sp-dragging, body.sp-dragging * { user-select: none !important; }
 .scan-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 50; background: var(--surface-2);
   border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 14px; font-size: 13px;
   box-shadow: var(--shadow-2); cursor: pointer; color: var(--fg); }
+
+/* ---- Extras ---- */
+.extras { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 22px; gap: 20px; }
+.extras-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.extras-head h2 { margin: 0; color: var(--fg); }
+.extras-group { display: flex; flex-direction: column; gap: 12px; }
+.extras-group-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.extras-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650;
+  padding: 3px 10px; border-radius: 999px; }
+.extras-badge.passive { color: var(--success); background: var(--success-weak);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent); }
+.extras-badge.active { color: var(--warn); background: var(--warn-weak);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.extras-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.extra-card { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 14px 16px; box-shadow: var(--shadow-1); display: flex; flex-direction: column; gap: 6px;
+  transition: border-color .14s ease, box-shadow .14s ease; }
+.extra-card:hover { border-color: var(--line-2); box-shadow: var(--shadow-2); }
+.extra-card.off { opacity: .62; }
+.extra-card.active { border-left: 3px solid color-mix(in srgb, var(--warn) 55%, transparent); }
+.extra-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.extra-name { font-weight: 650; color: var(--fg); font-size: 13.5px; }
+.extra-cat { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.extra-desc { margin: 2px 0 0; font-size: 12.5px; color: var(--mut); line-height: 1.5; }
+.extra-sends { font-size: 10.5px; font-family: var(--mono); color: var(--warn); background: var(--warn-weak);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: var(--r-sm); padding: 1px 7px; }
+.extra-run-hint { margin-top: 6px; font-size: 12px; color: var(--mut); background: var(--field);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 9px; }
+/* small switch reused on extra cards */
+.switch-btn.sm { height: auto; padding: 0; border: none; background: none; }
+.switch-btn.sm:hover { background: none; }
+.switch-btn.sm input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-btn.sm .switch { width: 30px; height: 17px; }
+.switch-btn.sm input:checked + .switch { background: var(--brand-strong); }
+.switch-btn.sm input:checked + .switch i { transform: translateX(13px); }

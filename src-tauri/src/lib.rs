@@ -679,6 +679,22 @@ fn plugins_list(state: State<AppState>) -> Vec<PluginManifest> {
     state.engine.plugins()
 }
 
+// ---- native Extras (passive = automatic, active = deliberate) ----
+
+#[tauri::command]
+fn extras_list(state: State<AppState>) -> Vec<shrike_engine::extras::ExtraStatus> {
+    state.engine.extras()
+}
+
+#[tauri::command]
+fn extra_set_enabled(
+    state: State<AppState>,
+    id: String,
+    on: bool,
+) -> CmdResult<Vec<shrike_engine::extras::ExtraStatus>> {
+    state.engine.set_extra_enabled(&id, on).map_err(err)
+}
+
 #[tauri::command]
 fn plugin_add(state: State<AppState>, manifest: PluginManifest) -> CmdResult<Vec<PluginManifest>> {
     state.engine.add_plugin(manifest).map_err(err)
@@ -1188,6 +1204,8 @@ pub fn run() {
             findings_report,
             sequencer_analyze,
             plugins_list,
+            extras_list,
+            extra_set_enabled,
             plugin_add,
             plugin_remove,
             plugin_set_enabled,

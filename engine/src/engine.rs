@@ -9,6 +9,7 @@ use crate::{
     ca::CaManager,
     config::ProxyConfig,
     core::{EventBus, HttpService, TrafficEvent, TrafficSink, TransactionSummary, TransactionView},
+    extras::Extras,
     intercept::{Decision, Interceptor},
     intruder::{self, AttackEvent, IntruderConfig},
     jvm::{
@@ -48,6 +49,8 @@ const META_SCOPE: &str = "scope";
 const META_MATCH_REPLACE: &str = "match_replace";
 /// Project-setting key under which the installed plugin manifests are stored as JSON.
 const META_PLUGINS: &str = "plugins";
+/// Project-setting key for the set of enabled passive Extras (JSON array of ids).
+const META_EXTRAS: &str = "extras";
 
 /// Maven Central downloads for the one-click JVM/Jython setup.
 const JVM_MONTOYA_URL: &str = "https://repo1.maven.org/maven2/net/portswigger/burp/extensions/montoya-api/2026.7/montoya-api-2026.7.jar";
@@ -231,6 +234,8 @@ pub struct Engine {
     _ingest_task: tokio::task::JoinHandle<()>,
     /// Live toggle for the passive scanner, shared with its sink.
     passive_enabled: Arc<AtomicBool>,
+    /// Native Extras registry (passive/active capabilities + enable state).
+    extras: Extras,
     /// Cancellation flag for the active crawl (one crawl at a time).
     crawl_stop: Mutex<Option<Arc<AtomicBool>>>,
     /// Cancellation flag for the active scan (one scan at a time).
@@ -267,10 +272,12 @@ impl Engine {
         // Passive scanner: inspects captured traffic and files Findings. Attached
         // to the ingest bus so it sees proxy, crawler and active-scan traffic alike.
         let passive_enabled = Arc::new(AtomicBool::new(config.passive_scan_enabled));
+        let extras = load_extras(&store);
         ingest.add_sink(Box::new(crate::scanner::PassiveScanner::new(
             Arc::clone(&store),
             ingest.clone(),
             Arc::clone(&passive_enabled),
+            Arc::new(extras.clone()),
         )));
 
         let engine = Arc::new(Self {
@@ -293,6 +300,7 @@ impl Engine {
             ingest,
             _ingest_task: ingest_task,
             passive_enabled,
+            extras,
             crawl_stop: Mutex::new(None),
             scan_stop: Mutex::new(None),
         });
@@ -1616,6 +1624,38 @@ impl Engine {
     pub fn clear_history(&self) -> Result<()> {
         self.store.clear()
     }
+
+    // --- native Extras (passive = auto, active = deliberate) ---
+
+    /// The Extras catalogue with live enable state, for the UI.
+    pub fn extras(&self) -> Vec<crate::extras::ExtraStatus> {
+        self.extras.statuses()
+    }
+
+    /// Enable or disable a passive Extra (active Extras cannot be toggled — they
+    /// only run on a deliberate action). Persists the new enabled set.
+    pub fn set_extra_enabled(&self, id: &str, on: bool) -> Result<Vec<crate::extras::ExtraStatus>> {
+        if !self.extras.set_enabled(id, on) {
+            return Err(anyhow!(
+                "'{id}' is not a toggleable passive extra (active tools run on demand)"
+            ));
+        }
+        let enabled: Vec<String> = self.extras.enabled_snapshot().into_iter().collect();
+        self.store
+            .set_meta(META_EXTRAS, &serde_json::to_string(&enabled)?)?;
+        Ok(self.extras.statuses())
+    }
+}
+
+/// Read the persisted enabled-Extras set; defaults when absent or unreadable.
+fn load_extras(store: &Store) -> Extras {
+    let persisted = store
+        .get_meta(META_EXTRAS)
+        .ok()
+        .flatten()
+        .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+        .map(|v| v.into_iter().collect());
+    Extras::from_enabled(persisted)
 }
 
 /// Read the persisted scope; a missing or corrupt entry yields an empty scope
@@ -1801,6 +1841,103 @@ mod tests {
         assert!(engine.history_get(first).unwrap().is_some());
         assert!(engine.history_get(second).unwrap().is_some());
         assert_eq!(engine.store().persist_failures(), 0);
+    }
+
+    #[test]
+    fn disabling_a_passive_extra_stops_its_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(test_config(dir.path())).unwrap();
+
+        // Disable the HTTP-hygiene extra; its header findings must stop.
+        engine.set_extra_enabled("http-hygiene", false).unwrap();
+        // An active extra cannot be toggled on (it only runs on demand).
+        assert!(engine.set_extra_enabled("active-audit", true).is_err());
+
+        use crate::core::{CapturedRequest, CapturedResponse, Transaction};
+        use bytes::Bytes;
+        let (rp, _) = hyper::Request::builder()
+            .method("GET")
+            .uri("https://lab.test/")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let request = CapturedRequest::from_parts(
+            1,
+            "127.0.0.1:9000".parse().unwrap(),
+            &rp,
+            Bytes::new(),
+            0,
+            true,
+        )
+        .unwrap();
+        let (sp, _) = hyper::Response::builder()
+            .status(200)
+            .header("content-type", "text/html")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let response =
+            CapturedResponse::from_parts(&sp, Bytes::from_static(b"<html></html>"), 13, true);
+        let txn = Transaction {
+            request,
+            response: Some(response),
+            error: None,
+            duration: std::time::Duration::from_millis(1),
+        };
+        engine
+            .ingest_bus()
+            .emit(TrafficEvent::Completed(Arc::new(txn)));
+
+        // Give the passive scanner time; with http-hygiene off there are no header findings.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let findings = engine.findings_list().unwrap();
+        assert!(
+            findings.is_empty(),
+            "disabled extra must produce no findings, got {findings:?}"
+        );
+
+        // Re-enable and re-observe: findings now appear (dedup uses a fresh id).
+        engine.set_extra_enabled("http-hygiene", true).unwrap();
+        let (rp2, _) = hyper::Request::builder()
+            .method("GET")
+            .uri("https://lab.test/again")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let request2 = CapturedRequest::from_parts(
+            2,
+            "127.0.0.1:9000".parse().unwrap(),
+            &rp2,
+            Bytes::new(),
+            0,
+            true,
+        )
+        .unwrap();
+        let (sp2, _) = hyper::Response::builder()
+            .status(200)
+            .header("content-type", "text/html")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let response2 =
+            CapturedResponse::from_parts(&sp2, Bytes::from_static(b"<html></html>"), 13, true);
+        engine
+            .ingest_bus()
+            .emit(TrafficEvent::Completed(Arc::new(Transaction {
+                request: request2,
+                response: Some(response2),
+                error: None,
+                duration: std::time::Duration::from_millis(1),
+            })));
+        let mut n = 0;
+        for _ in 0..50 {
+            n = engine.findings_list().unwrap().len();
+            if n > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(n >= 1, "re-enabled extra files findings again");
     }
 
     #[test]

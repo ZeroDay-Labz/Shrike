@@ -403,3 +403,13 @@ export type ActiveScanEvent =
   | { type: "progress"; done: number; total: number }
   | { type: "finished"; findings: number; stopped: boolean }
   | { type: "error"; message: string };
+
+export interface ExtraStatus {
+  id: string;
+  name: string;
+  category: string;
+  kind: "passive" | "active";
+  description: string;
+  sends_traffic: boolean;
+  enabled: boolean;
+}

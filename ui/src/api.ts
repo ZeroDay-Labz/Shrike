@@ -63,6 +63,9 @@ export const api = {
   compare: (a: string, b: string, mode: DiffMode) => invoke<DiffSeg[]>("compare", { a, b, mode }),
   sequencerAnalyze: (tokens: string[]) => invoke<SequencerReport>("sequencer_analyze", { tokens }),
   pluginsList: () => invoke<PluginManifest[]>("plugins_list"),
+  extrasList: () => invoke<import("./types").ExtraStatus[]>("extras_list"),
+  extraSetEnabled: (id: string, on: boolean) =>
+    invoke<import("./types").ExtraStatus[]>("extra_set_enabled", { id, on }),
   pluginAdd: (manifest: PluginManifest) => invoke<PluginManifest[]>("plugin_add", { manifest }),
   pluginRemove: (id: string) => invoke<PluginManifest[]>("plugin_remove", { id }),
   pluginSetEnabled: (id: string, on: boolean) => invoke<PluginManifest[]>("plugin_set_enabled", { id, on }),

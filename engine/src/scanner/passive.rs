@@ -28,13 +28,19 @@ impl PassiveScanner {
     /// Spawn the worker and return a sink. `enabled` is shared with the engine so
     /// the setting can be toggled live. Findings are written to `store`; new ones
     /// are announced on `bus` as [`TrafficEvent::FindingAdded`].
-    pub fn new(store: Arc<Store>, bus: crate::core::EventBus, enabled: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        bus: crate::core::EventBus,
+        enabled: Arc<AtomicBool>,
+        extras: Arc<crate::extras::Extras>,
+    ) -> Self {
         let (tx, rx) = sync_channel::<Arc<Transaction>>(QUEUE_DEPTH);
         thread::Builder::new()
             .name("shrike-passive-scan".into())
             .spawn(move || {
                 while let Ok(txn) = rx.recv() {
-                    scan_one(&txn, &store, &bus);
+                    // Re-read the enabled set per transaction so toggles apply live.
+                    scan_one(&txn, &store, &bus, &extras.enabled_snapshot());
                 }
             })
             .expect("spawning passive scanner worker");
@@ -56,11 +62,16 @@ impl TrafficSink for PassiveScanner {
     }
 }
 
-fn scan_one(txn: &Transaction, store: &Store, bus: &crate::core::EventBus) {
+fn scan_one(
+    txn: &Transaction,
+    store: &Store,
+    bus: &crate::core::EventBus,
+    enabled: &std::collections::HashSet<String>,
+) {
     let host = txn.request.service.host.clone();
     let path = txn.request.path().to_string();
     let txn_id = txn.request.id;
-    for hit in run_checks(txn) {
+    for hit in run_checks(txn, enabled) {
         let key = hit.dedup_key(&host, &path);
         let new = hit.into_finding(&host, &path, txn_id);
         match store.finding_create_deduped(new, &key) {
@@ -71,7 +82,6 @@ fn scan_one(txn: &Transaction, store: &Store, bus: &crate::core::EventBus) {
     }
 }
 
-/// Run every passive check over a transaction.
 /// Current Unix time in whole seconds (for JWT expiry checks); 0 if the clock
 /// is before the epoch, which only makes the check more conservative.
 fn now_unix_secs() -> u64 {
@@ -81,7 +91,10 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-pub fn run_checks(txn: &Transaction) -> Vec<Hit> {
+/// Run the enabled passive checks over a transaction. Each check group is gated
+/// by its Extra id (see `crate::extras`): a disabled passive extra yields no
+/// findings. Passive checks only read captured data — they never send traffic.
+pub fn run_checks(txn: &Transaction, enabled: &std::collections::HashSet<String>) -> Vec<Hit> {
     let mut hits = Vec::new();
     let Some(resp) = txn.response.as_ref() else {
         return hits;
@@ -95,16 +108,22 @@ pub fn run_checks(txn: &Transaction) -> Vec<Hit> {
         std::borrow::Cow::Borrowed("")
     };
 
-    if is_html {
-        hits.extend(security_header_hits(resp, secure));
+    if enabled.contains("http-hygiene") {
+        if is_html {
+            hits.extend(security_header_hits(resp, secure));
+        }
+        hits.extend(cookie_flag_hits(resp, secure));
+        hits.extend(info_disclosure_hits(resp));
+        hits.extend(error_signature_hits(&body));
+        if secure && is_html {
+            hits.extend(mixed_content_hits(&body));
+        }
     }
-    hits.extend(cookie_flag_hits(resp, secure));
-    hits.extend(reflected_input_hits(txn, &body, is_texty(ctype)));
-    hits.extend(info_disclosure_hits(resp));
-    hits.extend(error_signature_hits(&body));
-    hits.extend(crate::scanner::jwt_scan::jwt_hits(txn, now_unix_secs()));
-    if secure && is_html {
-        hits.extend(mixed_content_hits(&body));
+    if enabled.contains("reflected-input") {
+        hits.extend(reflected_input_hits(txn, &body, is_texty(ctype)));
+    }
+    if enabled.contains("jwt") {
+        hits.extend(crate::scanner::jwt_scan::jwt_hits(txn, now_unix_secs()));
     }
     hits
 }
@@ -392,6 +411,14 @@ fn mixed_content_hits(body: &str) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every passive check enabled, for tests that exercise all of them.
+    fn all_enabled() -> std::collections::HashSet<String> {
+        ["http-hygiene", "reflected-input", "jwt"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
     use crate::core::{CapturedRequest, CapturedResponse};
     use bytes::Bytes;
     use std::time::Duration;
@@ -436,7 +463,7 @@ mod tests {
     #[test]
     fn flags_missing_security_headers_on_html() {
         let t = txn("https://lab.test/", "text/html", &[], b"<html></html>");
-        let got = ids(&run_checks(&t));
+        let got = ids(&run_checks(&t, &all_enabled()));
         for want in [
             "missing-csp",
             "missing-hsts",
@@ -462,7 +489,7 @@ mod tests {
             ],
             b"<html></html>",
         );
-        let got = ids(&run_checks(&t));
+        let got = ids(&run_checks(&t, &all_enabled()));
         assert!(!got.contains(&"missing-csp"));
         assert!(!got.contains(&"missing-hsts"));
         assert!(!got.contains(&"missing-xcto"));
@@ -480,7 +507,7 @@ mod tests {
             &[("set-cookie", "sid=abc; Path=/")],
             b"<html></html>",
         );
-        let hit = run_checks(&t)
+        let hit = run_checks(&t, &all_enabled())
             .into_iter()
             .find(|h| h.check_id == "cookie-flags")
             .unwrap();
@@ -498,7 +525,7 @@ mod tests {
             &[("content-security-policy", "x")],
             b"<html>results for shrike_marker here</html>",
         );
-        let hit = run_checks(&t)
+        let hit = run_checks(&t, &all_enabled())
             .into_iter()
             .find(|h| h.check_id == "reflected-input");
         assert!(hit.is_some());
@@ -514,7 +541,7 @@ mod tests {
             b"<html>12345 ab</html>",
         );
         assert!(
-            run_checks(&t)
+            run_checks(&t, &all_enabled())
                 .iter()
                 .all(|h| h.check_id != "reflected-input")
         );
@@ -534,7 +561,7 @@ mod tests {
             ],
             b"<html>java.lang.NullPointerException at ...</html>",
         );
-        let got = ids(&run_checks(&t));
+        let got = ids(&run_checks(&t, &all_enabled()));
         assert!(got.contains(&"stack-trace"));
         assert!(got.contains(&"banner-server"));
     }
@@ -547,13 +574,13 @@ mod tests {
             &[("content-security-policy", "x")],
             b"<img src=\"http://cdn.test/a.png\">",
         );
-        assert!(ids(&run_checks(&https)).contains(&"mixed-content"));
+        assert!(ids(&run_checks(&https, &all_enabled())).contains(&"mixed-content"));
         let http = txn(
             "http://lab.test/",
             "text/html",
             &[],
             b"<img src=\"http://cdn.test/a.png\">",
         );
-        assert!(!ids(&run_checks(&http)).contains(&"mixed-content"));
+        assert!(!ids(&run_checks(&http, &all_enabled())).contains(&"mixed-content"));
     }
 }

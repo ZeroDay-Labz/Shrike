@@ -23,6 +23,7 @@ import { Extender } from "./components/Extender";
 import { ExtensionTab } from "./components/ExtensionTab";
 import { Jwt } from "./components/Jwt";
 import { Findings } from "./components/Findings";
+import { Extras } from "./components/Extras";
 import { Icon } from "./components/Icon";
 import { ConfirmHost, ToastHost, confirmAction, toast } from "./components/Overlay";
 import type { BappOutput, InstalledBapp, RunningBapp } from "./types";
@@ -45,6 +46,7 @@ const TOOLS: Tool[] = [
   { id: "decoder", label: "Decoder", icon: "decoder", group: "Tools" },
   { id: "comparer", label: "Comparer", icon: "comparer", group: "Tools" },
   { id: "jwt", label: "JWT", icon: "key", group: "Tools" },
+  { id: "extras", label: "Extras", icon: "extender", group: "Tools" },
   { id: "settings", label: "Settings", icon: "settings", group: "System" },
 ];
 const TOOL_GROUPS = TOOLS.reduce<{ name: string; tools: Tool[] }[]>((acc, t) => {
@@ -537,6 +539,9 @@ export default function App() {
     }
     if (tool === "findings") {
       return <Findings onShowTransaction={showTransaction} />;
+    }
+    if (tool === "extras") {
+      return <Extras onGoToProxy={() => setTool("proxy")} />;
     }
     if (tool === "extender") {
       return (
