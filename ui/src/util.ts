@@ -104,3 +104,15 @@ export function statusClass(status?: number): string {
   if (status < 500) return "s-4xx";
   return "s-5xx";
 }
+
+/** Container highlight colours (PwnFox-style). Maps a validated label to a CSS
+ * colour; unknown labels get no colour. */
+export const HIGHLIGHT_COLORS: Record<string, string> = {
+  red: "#e5484d", orange: "#f76b15", yellow: "#f5c518", green: "#30a46c",
+  cyan: "#2bb8c4", blue: "#3b82f6", pink: "#e93d82", purple: "#8b5cf6",
+  gray: "#8b949e", grey: "#8b949e",
+};
+
+export function highlightColor(label?: string): string | undefined {
+  return label ? HIGHLIGHT_COLORS[label] : undefined;
+}

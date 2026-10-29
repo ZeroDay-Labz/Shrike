@@ -143,6 +143,7 @@ impl Sender {
             body: body_bytes,
             body_complete: true,
             started_at: SystemTime::now(),
+            highlight: None,
         };
 
         let started = Instant::now();

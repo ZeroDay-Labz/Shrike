@@ -322,6 +322,11 @@ option, optgroup { background: var(--surface-1); color: var(--fg); }
 .tabs .n { color: var(--mut); font-family: var(--mono); font-size: 11px; margin-left: 5px; }
 .filterbar input:not([type=checkbox]) { width: 170px; }
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--mut); cursor: pointer; user-select: none; white-space: nowrap; }
+.color-filter { display: inline-flex; align-items: center; gap: 5px; padding-left: 4px; margin-left: 2px; border-left: 1px solid var(--line); }
+.swatch { width: 15px; height: 15px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0;
+  box-shadow: 0 0 0 1px var(--line-2) inset; transition: transform .1s ease, border-color .1s ease; }
+.swatch:hover { transform: scale(1.15); }
+.swatch.on { border-color: var(--fg); }
 .chk:hover { color: var(--fg); }
 
 /* ---- tables -------------------------------------------------------------- */
@@ -336,6 +341,7 @@ option, optgroup { background: var(--surface-1); color: var(--fg); }
 .tbody.static .tr { position: static; }
 .tr:hover { background: var(--hover); }
 .tr.sel { background: var(--brand-weak); }
+.tr.tagged .td:first-child { padding-left: 11px; }
 .tr.err { color: var(--danger); }
 .td { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .td.mut { color: var(--mut); }

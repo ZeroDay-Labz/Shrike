@@ -2,7 +2,7 @@ import type React from "react";
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TransactionSummary } from "../types";
-import { humanBytes, shortMime, statusClass, timeFull, timeShort } from "../util";
+import { highlightColor, humanBytes, shortMime, statusClass, timeFull, timeShort } from "../util";
 import { Icon } from "./Icon";
 
 // Fixed-width columns are sized to content; host and URL flex to fill the window,
@@ -97,14 +97,20 @@ export function HistoryTable(props: {
           {v.getVirtualItems().map((item) => {
             const r = props.rows[item.index];
             const sel = r.id === props.selectedId;
+            const hl = highlightColor(r.highlight);
             return (
               <div
                 key={r.id}
                 id={`hrow-${r.id}`}
                 role="row"
                 aria-selected={sel}
-                className={"tr" + (sel ? " sel" : "") + (r.error ? " err" : "")}
-                style={{ transform: `translateY(${item.start}px)`, height: ROW_H }}
+                title={r.highlight ? `container: ${r.highlight}` : undefined}
+                className={"tr" + (sel ? " sel" : "") + (r.error ? " err" : "") + (hl ? " tagged" : "")}
+                style={{
+                  transform: `translateY(${item.start}px)`,
+                  height: ROW_H,
+                  ...(hl ? { boxShadow: `inset 3px 0 0 ${hl}` } : {}),
+                }}
                 onClick={() => { props.onSelect(r.id); parentRef.current?.focus(); }}
                 onDoubleClick={(e) => props.onAction?.("repeater", r, { x: e.clientX, y: e.clientY })}
                 onContextMenu={(e) => props.onContextMenu?.(e, r)}

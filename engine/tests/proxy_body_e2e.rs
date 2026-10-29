@@ -119,6 +119,7 @@ struct Seen {
     content_length: Option<String>,
     chunked: bool,
     marker: Option<String>,
+    pwnfox: Option<String>,
 }
 
 impl Seen {
@@ -135,6 +136,7 @@ impl Seen {
             content_length: field("cl"),
             chunked: field("chunked").as_deref() == Some("true"),
             marker: field("marker"),
+            pwnfox: field("pwnfox"),
         }
     }
 
@@ -176,6 +178,7 @@ async fn upstream(
     let cl = header("content-length");
     let is_chunked = header("transfer-encoding").is_some_and(|v| v.contains("chunked"));
     let marker = header("x-marker");
+    let pwnfox = header("x-pwnfox-color");
 
     if let Some(n) = path.strip_prefix("/big/") {
         return Ok(Response::builder()
@@ -206,10 +209,11 @@ async fn upstream(
         }
     }
     let report = format!(
-        "len={len}\nbad={}\ncl={}\nchunked={is_chunked}\nmarker={}\n",
+        "len={len}\nbad={}\ncl={}\nchunked={is_chunked}\nmarker={}\npwnfox={}\n",
         bad.map(|b| b.to_string()).unwrap_or_default(),
         cl.unwrap_or_default(),
         marker.unwrap_or_default(),
+        pwnfox.unwrap_or_default(),
     );
     Ok(Response::new(full(report)))
 }
@@ -694,4 +698,30 @@ fn edited_intercept_request_is_recorded_as_sent() {
         "recorded body must be the edited body that was sent"
     );
     lab.engine.set_intercept(false);
+}
+
+/// PwnFox container colour: the X-PwnFox-Color header is recorded on the
+/// transaction and stripped before the request reaches the target.
+#[test]
+fn pwnfox_color_is_recorded_and_not_forwarded() {
+    let lab = Lab::new();
+    let req = Request::builder()
+        .method("POST")
+        .uri(lab.url("/check?case=pwnfox"))
+        .header("x-pwnfox-color", "red")
+        .body(full("hi"))
+        .unwrap();
+    let res = lab.helper.block_on(send(lab.proxy, req)).unwrap();
+    let seen = Seen::parse(&lab.helper.block_on(text(res)));
+    assert_eq!(
+        seen.pwnfox, None,
+        "X-PwnFox-Color must not reach the target"
+    );
+
+    let rec = lab.record("case=pwnfox");
+    assert_eq!(
+        rec.request.highlight.as_deref(),
+        Some("red"),
+        "colour recorded on the request"
+    );
 }

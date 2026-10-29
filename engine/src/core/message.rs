@@ -103,6 +103,9 @@ pub struct CapturedRequest {
     pub body_len: usize,
     pub body_complete: bool,
     pub started_at: SystemTime,
+    /// Container highlight colour for this request (e.g. from a PwnFox-style
+    /// `X-PwnFox-Color` header the proxy strips). `None` for untagged traffic.
+    pub highlight: Option<String>,
 }
 
 impl CapturedRequest {
@@ -132,6 +135,7 @@ impl CapturedRequest {
             body_len,
             body_complete,
             started_at: SystemTime::now(),
+            highlight: None,
         })
     }
 

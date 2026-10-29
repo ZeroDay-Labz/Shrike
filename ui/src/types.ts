@@ -56,6 +56,8 @@ export interface TransactionSummary {
   started_at_ms: number;
   client_addr: string;
   error?: string;
+  /** Container highlight colour (e.g. from a PwnFox X-PwnFox-Color header). */
+  highlight?: string;
 }
 
 export interface HistoryFilter {

@@ -75,6 +75,8 @@ pub struct RequestView {
     pub headers: Vec<Header>,
     pub body: BodyView,
     pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
 }
 
 impl From<&CapturedRequest> for RequestView {
@@ -90,6 +92,7 @@ impl From<&CapturedRequest> for RequestView {
             headers: r.headers.clone(),
             body: BodyView::new(&r.body, r.body_len, r.body_complete),
             started_at_ms: epoch_millis(r.started_at),
+            highlight: r.highlight.clone(),
         }
     }
 }
@@ -162,6 +165,8 @@ pub struct TransactionSummary {
     pub client_addr: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
 }
 
 impl From<&Transaction> for TransactionSummary {
@@ -185,6 +190,7 @@ impl From<&Transaction> for TransactionSummary {
             started_at_ms: epoch_millis(r.started_at),
             client_addr: r.client_addr.to_string(),
             error: t.error.clone(),
+            highlight: r.highlight.clone(),
         }
     }
 }

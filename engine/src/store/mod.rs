@@ -1019,6 +1019,7 @@ fn summary_from_view(v: &TransactionView) -> TransactionSummary {
         started_at_ms: r.started_at_ms,
         client_addr: r.client_addr.clone(),
         error: v.error.clone(),
+        highlight: r.highlight.clone(),
     }
 }
 

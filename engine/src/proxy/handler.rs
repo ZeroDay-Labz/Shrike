@@ -63,6 +63,9 @@ struct Pending {
 pub struct TrafficHandler {
     shared: Arc<Shared>,
     pending: Option<Arc<Pending>>,
+    /// Container colour for the in-flight request, from a stripped
+    /// `X-PwnFox-Color` header. Stamped onto the record in [`Self::remember`].
+    pending_highlight: Option<String>,
 }
 
 impl TrafficHandler {
@@ -86,6 +89,7 @@ impl TrafficHandler {
                 ids,
             }),
             pending: None,
+            pending_highlight: None,
         }
     }
 
@@ -107,6 +111,20 @@ impl TrafficHandler {
 fn strip_proxy_headers(headers: &mut header::HeaderMap) {
     headers.remove("proxy-connection");
     headers.remove(header::PROXY_AUTHORIZATION);
+}
+
+/// Known PwnFox container colours. An allowlist so a client-controlled header
+/// can only ever select one of these labels (never arbitrary text/markup).
+const PWNFOX_COLORS: &[&str] = &[
+    "red", "orange", "yellow", "green", "cyan", "blue", "pink", "purple", "gray", "grey",
+];
+
+/// Take and validate the PwnFox container colour header, removing it from the
+/// outgoing request. Returns the lower-cased colour label when it is recognised.
+fn take_pwnfox_color(headers: &mut header::HeaderMap) -> Option<String> {
+    let raw = headers.remove("x-pwnfox-color")?;
+    let label = raw.to_str().ok()?.trim().to_ascii_lowercase();
+    PWNFOX_COLORS.contains(&label.as_str()).then_some(label)
 }
 
 /// On a WebSocket upgrade, remove the `Sec-WebSocket-Extensions` header so the
@@ -499,6 +517,9 @@ impl HttpHandler for TrafficHandler {
         let id = self.shared.ids.next();
         let (mut parts, body) = req.into_parts();
         strip_proxy_headers(&mut parts.headers);
+        // PwnFox-style container colour: record it and strip it so it never
+        // reaches the target (it is proxy-control metadata, not app data).
+        self.pending_highlight = take_pwnfox_color(&mut parts.headers);
         if strip_ws_compression(&mut parts.headers) {
             debug!(uri = %parts.uri, "websocket upgrade: stripped compression extension for interception");
         }
@@ -729,7 +750,10 @@ impl TrafficHandler {
             .unwrap_or(false)
     }
 
-    fn remember(&mut self, captured: CapturedRequest) {
+    fn remember(&mut self, mut captured: CapturedRequest) {
+        if captured.highlight.is_none() {
+            captured.highlight = self.pending_highlight.clone();
+        }
         let request = Arc::new(captured);
         self.shared
             .bus
@@ -948,6 +972,28 @@ mod tests {
             );
         }
         h
+    }
+
+    #[test]
+    fn pwnfox_color_is_parsed_validated_and_stripped() {
+        let mut h = headers(&[("X-PwnFox-Color", "red"), ("Host", "lab.test")]);
+        assert_eq!(take_pwnfox_color(&mut h).as_deref(), Some("red"));
+        assert!(!h.contains_key("x-pwnfox-color"), "header must be stripped");
+        assert!(h.contains_key("host"), "other headers are untouched");
+
+        // Unknown labels are ignored (no arbitrary values reach the UI), but the
+        // header is still stripped so it never reaches the target.
+        let mut h2 = headers(&[("X-PwnFox-Color", "<script>")]);
+        assert_eq!(take_pwnfox_color(&mut h2), None);
+        assert!(!h2.contains_key("x-pwnfox-color"));
+
+        // Case-insensitive label.
+        let mut h3 = headers(&[("X-PwnFox-Color", "Blue")]);
+        assert_eq!(take_pwnfox_color(&mut h3).as_deref(), Some("blue"));
+
+        // No header -> None.
+        let mut h4 = headers(&[("Host", "lab.test")]);
+        assert_eq!(take_pwnfox_color(&mut h4), None);
     }
 
     #[test]

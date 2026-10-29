@@ -30,7 +30,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import { getTheme, setTheme, type Theme } from "./theme";
 import type { InterceptItem, Service, SiteNode } from "./types";
 import { buildRaw, parseRaw, copyText, toCurl, type RepeaterTab } from "./repeater";
-import { rawRequest, rawResponse } from "./util";
+import { rawRequest, rawResponse, HIGHLIGHT_COLORS } from "./util";
 
 type Tool = { id: string; label: string; icon: string; group: string };
 const TOOLS: Tool[] = [
@@ -101,6 +101,7 @@ export default function App() {
 
   const [query, setQuery] = useState("");
   const [queryErr, setQueryErr] = useState("");
+  const [colorFilter, setColorFilter] = useState<string | null>(null);
   const filterRef = useRef(filter);
   filterRef.current = filter;
 
@@ -481,6 +482,16 @@ export default function App() {
     return [...nav, ...actions];
   }, [status, intercepting, theme, toggleIntercept, newRepeaterTab, toggleTheme, clearHistory]);
 
+  // Container colours currently present in history, for the quick-filter swatches.
+  const presentColors = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of rows) if (r.highlight) seen.add(r.highlight);
+    return [...seen];
+  }, [rows]);
+  const shownRows = useMemo(
+    () => (colorFilter ? rows.filter((r) => r.highlight === colorFilter) : rows),
+    [rows, colorFilter],
+  );
   const count = rows.length;
 
   const main = useMemo(() => {
@@ -566,13 +577,14 @@ export default function App() {
           />
         )}
         <FilterBar filter={filter} setFilter={setFilter} count={count} tab={tab} setTab={setTab} wsCount={wsRows.length}
-          query={query} setQuery={setQuery} queryErr={queryErr} />
+          query={query} setQuery={setQuery} queryErr={queryErr}
+          colors={presentColors} colorFilter={colorFilter} setColorFilter={setColorFilter} />
         {tab === "ws" ? (
           <div className="pane-fill"><WsTable rows={wsRows} /></div>
         ) : (
           <SplitPane
             direction="vertical" storageKey="shrike.proxy.v" defaultSize={46}
-            first={<HistoryTable rows={rows} selectedId={selId} onSelect={setSelId}
+            first={<HistoryTable rows={shownRows} selectedId={selId} onSelect={setSelId}
               onContextMenu={openRowMenu} onAction={onRowAction} />}
             second={detail ? (
               <div className="detail">
@@ -624,7 +636,7 @@ export default function App() {
         )}
       </div>
     );
-  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, onRowAction, sendItems, copy, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, addFindingFromView, activeScan, showTransaction, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
+  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, onRowAction, sendItems, copy, shownRows, presentColors, colorFilter, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, addFindingFromView, activeScan, showTransaction, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
 
   return (
     <div className="app">
@@ -718,6 +730,9 @@ function FilterBar(props: {
   query: string;
   setQuery: (q: string) => void;
   queryErr: string;
+  colors: string[];
+  colorFilter: string | null;
+  setColorFilter: (c: string | null) => void;
 }) {
   const { filter, setFilter } = props;
   return (
@@ -761,6 +776,17 @@ function FilterBar(props: {
               </>
           }
           {props.queryErr && <span className="query-err" title={props.queryErr}>⚠ query error</span>}
+          {props.colors.length > 0 && (
+            <div className="color-filter" title="Filter by container colour (PwnFox)">
+              {props.colors.map((c) => (
+                <button key={c}
+                  className={"swatch" + (props.colorFilter === c ? " on" : "")}
+                  style={{ background: HIGHLIGHT_COLORS[c] ?? "var(--mut)" }}
+                  title={props.colorFilter === c ? `showing ${c} — click to clear` : `show only ${c}`}
+                  onClick={() => props.setColorFilter(props.colorFilter === c ? null : c)} />
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>

@@ -53,6 +53,7 @@ fn parse_request(raw: &[u8], service: HttpService) -> Option<CapturedRequest> {
         body_len: body.len(),
         body_complete: true,
         started_at: SystemTime::now(),
+        highlight: None,
     })
 }
 
