@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { BappOutput, InstalledBapp, RunningBapp } from "../types";
 
 /**
- * Console tab for one running BApp. A Java extension's own Swing UI opens in its
+ * Console tab for one running extension. A Java extension's own Swing UI opens in its
  * own OS window (it cannot be painted inside this web UI); this tab is its
  * control panel: what it registered, its live log output, and Run/Stop controls.
  */

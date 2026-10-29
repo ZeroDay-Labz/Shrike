@@ -6,6 +6,7 @@ import type { AttackResult, AttackType, Generator, IntruderConfig, PreviewResult
 import { api, events } from "../api";
 import { statusClass, humanBytes } from "../util";
 import { SplitPane } from "./SplitPane";
+import { confirmAction } from "./Overlay";
 import { markerHighlight } from "../cm-markers";
 import { shrikeEditorTheme } from "../cm-theme";
 
@@ -115,7 +116,11 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   async function start() {
     if (posCount === 0) return;
     const planned = preview?.total ?? 0;
-    if (planned > 5000 && !window.confirm(`This attack will send about ${planned} requests. Continue?`)) return;
+    if (planned > 5000 && !(await confirmAction({
+      title: `Send about ${planned.toLocaleString()} requests?`,
+      body: "This is a large attack. Make sure the target is in scope and can take the load.",
+      confirmLabel: "Start attack",
+    }))) return;
     setResults([]); setTotal(0); setCapped(false); setRunning(true);
     try {
       const id = await api.intruderStart(buildConfig());

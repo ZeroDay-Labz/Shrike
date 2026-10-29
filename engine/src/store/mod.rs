@@ -8,8 +8,8 @@
 //! run concurrently.
 
 use crate::core::{
-    TrafficEvent, TrafficSink, Transaction, TransactionSummary, TransactionView, WsDirection,
-    WsMessageEvent, epoch_millis,
+    TrafficEvent, TrafficSink, Transaction, TransactionIds, TransactionSummary, TransactionView,
+    WsDirection, WsMessageEvent, epoch_millis,
 };
 use crate::findings::{
     Annotation, Confidence, Finding, FindingStatus, FindingUpdate, NewFinding, Severity,
@@ -229,6 +229,35 @@ pub struct Store {
     /// Retention cap: keep at most this many newest transactions (0 = unlimited).
     /// Read by the writer thread; set at startup and on config change.
     max_rows: Arc<std::sync::atomic::AtomicUsize>,
+    /// The one transaction-id sequence for this project, shared by every
+    /// producer (proxy, crawler, import). Seeded past every id already in use.
+    ids: TransactionIds,
+    /// Count of traffic records the writer failed to persist (e.g. an id
+    /// conflict). Failures never overwrite existing rows.
+    persist_failures: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The highest transaction id this project references anywhere: stored history,
+/// annotations, and finding evidence. Annotations and findings survive a
+/// history clear or retention prune, so seeding from history alone could reuse
+/// an id they still point at.
+fn highest_used_txn_id(conn: &Connection) -> Result<u64> {
+    let mut high: i64 = conn.query_row(
+        "SELECT MAX(m) FROM (
+             SELECT COALESCE(MAX(id), 0) AS m FROM transactions
+             UNION ALL SELECT COALESCE(MAX(transaction_id), 0) FROM annotations
+         )",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare("SELECT txn_ids FROM findings")?;
+    for json in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        let ids: Vec<u64> = serde_json::from_str(&json?).unwrap_or_default();
+        if let Some(&m) = ids.iter().max() {
+            high = high.max(m as i64);
+        }
+    }
+    Ok(high.max(0) as u64)
 }
 
 impl Store {
@@ -247,6 +276,11 @@ impl Store {
         init.pragma_update(None, "synchronous", "NORMAL").ok();
         init.execute_batch(SCHEMA).context("creating schema")?;
         run_migrations(&init).context("running schema migrations")?;
+        // Seed before the writer starts and before any producer exists, so no
+        // id can be handed out that a concurrent insert could still claim.
+        let ids = TransactionIds::starting_after(
+            highest_used_txn_id(&init).context("reading the highest transaction id")?,
+        );
         drop(init);
 
         let read = Connection::open(&path).context("opening read connection")?;
@@ -256,9 +290,11 @@ impl Store {
         let writer_path = path.clone();
         let max_rows = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let writer_max = Arc::clone(&max_rows);
+        let persist_failures = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let writer_failures = Arc::clone(&persist_failures);
         std::thread::Builder::new()
             .name("shrike-store-writer".into())
-            .spawn(move || writer_loop(writer_path, rx, writer_max))
+            .spawn(move || writer_loop(writer_path, rx, writer_max, writer_failures))
             .context("spawning store writer")?;
 
         Ok(Self {
@@ -266,7 +302,21 @@ impl Store {
             tx,
             path,
             max_rows,
+            ids,
+            persist_failures,
         })
+    }
+
+    /// The project's transaction-id allocator. Every component that records
+    /// traffic into this store must take its ids from here.
+    pub fn transaction_ids(&self) -> TransactionIds {
+        self.ids.clone()
+    }
+
+    /// How many traffic records the writer has failed to persist since open.
+    pub fn persist_failures(&self) -> u64 {
+        self.persist_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set the history retention cap (newest-N transactions; 0 = unlimited). The
@@ -575,19 +625,12 @@ impl Store {
     }
 
     /// Insert imported transactions (e.g. from an XML items export), assigning each
-    /// a fresh id after the current maximum so they don't collide with live
+    /// a fresh id from the project allocator so they can't collide with live
     /// capture. Returns how many were queued. Blocks until they are written.
     pub fn import_transactions(&self, mut txs: Vec<Transaction>) -> Result<usize> {
-        let base: i64 = {
-            let conn = self.read.lock().expect("store read lock");
-            conn.query_row("SELECT COALESCE(MAX(id), 0) FROM transactions", [], |r| {
-                r.get(0)
-            })
-            .unwrap_or(0)
-        };
         let n = txs.len();
-        for (i, tx) in txs.iter_mut().enumerate() {
-            tx.request.id = base as u64 + i as u64 + 1;
+        for tx in txs.iter_mut() {
+            tx.request.id = self.ids.next();
         }
         for tx in txs {
             self.tx
@@ -983,6 +1026,7 @@ fn writer_loop(
     path: PathBuf,
     rx: mpsc::Receiver<WriteMsg>,
     max_rows: Arc<std::sync::atomic::AtomicUsize>,
+    failures: Arc<std::sync::atomic::AtomicU64>,
 ) {
     let conn = match Connection::open(&path) {
         Ok(c) => c,
@@ -1020,7 +1064,8 @@ fn writer_loop(
             }
         };
         if let Err(e) = res {
-            warn!(error = %e, "failed to persist a traffic record");
+            failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            error!(error = %e, "failed to persist a traffic record");
         }
     }
 }
@@ -1029,8 +1074,10 @@ fn insert_transaction(conn: &Connection, tx: &Transaction) -> Result<()> {
     let summary = TransactionSummary::from(tx);
     let view = TransactionView::from(tx);
     let view_json = serde_json::to_string(&view).context("serializing transaction view")?;
+    // A plain INSERT: an id that already exists is a conflict to report, never
+    // a reason to replace the stored record.
     conn.execute(
-        "INSERT OR REPLACE INTO transactions
+        "INSERT INTO transactions
          (id, host, port, secure, method, url, status, mime, req_len, resp_len,
           duration_ms, started_at_ms, client_addr, error, view_json)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1051,7 +1098,8 @@ fn insert_transaction(conn: &Connection, tx: &Transaction) -> Result<()> {
             summary.error,
             view_json,
         ],
-    )?;
+    )
+    .with_context(|| format!("inserting transaction {}", summary.id))?;
     Ok(())
 }
 
@@ -1643,5 +1691,129 @@ mod tests {
         // clearing both removes the row
         store.annotation_set(5, None, None).unwrap();
         assert!(store.annotations_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplicate_id_is_reported_and_never_replaces_the_stored_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let mut sink = store.sink();
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            5,
+            "original.example",
+            "GET",
+            200,
+            b"{}",
+        ))));
+        store.flush().unwrap();
+        assert_eq!(store.persist_failures(), 0);
+
+        // A second record claiming the same id is a genuine insert failure.
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            5,
+            "intruder.example",
+            "POST",
+            500,
+            b"{}",
+        ))));
+        store.flush().unwrap();
+
+        assert_eq!(store.persist_failures(), 1, "the conflict is reported");
+        let kept = store.history_get(5).unwrap().unwrap();
+        assert_eq!(kept.request.service.host, "original.example");
+        assert_eq!(kept.request.method, "GET");
+        assert_eq!(store.count(&HistoryFilter::default()).unwrap(), 1);
+    }
+
+    #[test]
+    fn allocator_resumes_past_stored_history_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            let ids = store.transaction_ids();
+            assert_eq!(ids.next(), 1, "a fresh project starts at 1");
+            let mut sink = store.sink();
+            for id in [1, ids.next(), ids.next()] {
+                sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+                    id,
+                    "a.example",
+                    "GET",
+                    200,
+                    b"{}",
+                ))));
+            }
+            store.flush().unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.transaction_ids().next(), 4);
+    }
+
+    #[test]
+    fn allocator_never_reuses_ids_still_referenced_by_annotations_or_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            let mut sink = store.sink();
+            for id in 1..=3 {
+                sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+                    id,
+                    "a.example",
+                    "GET",
+                    200,
+                    b"{}",
+                ))));
+            }
+            store.flush().unwrap();
+            store.annotation_set(3, Some("red".into()), None).unwrap();
+            store
+                .finding_create(NewFinding {
+                    title: "evidence beyond history".into(),
+                    severity: Severity::Low,
+                    confidence: Confidence::Firm,
+                    detail: String::new(),
+                    host: None,
+                    path: None,
+                    transaction_ids: vec![2, 9],
+                })
+                .unwrap();
+            // History is cleared but the triage layer still points at ids 3 and 9.
+            store.clear().unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.transaction_ids().next(),
+            10,
+            "new traffic must not inherit an old annotation or finding"
+        );
+    }
+
+    #[test]
+    fn import_takes_ids_from_the_shared_allocator() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let ids = store.transaction_ids();
+        // Two ids handed to live capture that hasn't been written yet.
+        let (a, b) = (ids.next(), ids.next());
+        store
+            .import_transactions(vec![
+                txn(0, "imported.example", "GET", 200, b"{}"),
+                txn(0, "imported.example", "GET", 200, b"{}"),
+            ])
+            .unwrap();
+        let mut sink = store.sink();
+        for id in [a, b] {
+            sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+                id,
+                "live.example",
+                "GET",
+                200,
+                b"{}",
+            ))));
+        }
+        store.flush().unwrap();
+        assert_eq!(store.persist_failures(), 0);
+        assert_eq!(store.count(&HistoryFilter::default()).unwrap(), 4);
     }
 }

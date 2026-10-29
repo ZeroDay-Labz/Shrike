@@ -26,6 +26,13 @@ const PATHS: Record<string, ReactNode> = {
   database: (<><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" /></>),
   globe: (<><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z" /></>),
   key: (<><circle cx="8" cy="15" r="4.2" /><path d="m11 12 8-8" /><path d="m17.5 5.5 2 2" /><path d="m14.5 8.5 2 2" /></>),
+  more: (<><circle cx="5" cy="12" r="1.2" /><circle cx="12" cy="12" r="1.2" /><circle cx="19" cy="12" r="1.2" /></>),
+  power: (<><path d="M12 3v8" /><path d="M6.4 6.6a8 8 0 1 0 11.2 0" /></>),
+  pause: (<><path d="M9 5v14M15 5v14" /></>),
+  send: (<><path d="M4 12h13" /><path d="m12 6 6 6-6 6" /></>),
+  lock: (<><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>),
+  chevron: (<><path d="m6 9 6 6 6-6" /></>),
+  inbox: (<><path d="M3 13h5l1.5 3h5L16 13h5" /><path d="M5.5 5h13L21 13v6H3v-6z" /></>),
 };
 
 export function Icon(props: { name: string; size?: number; className?: string }) {

@@ -76,6 +76,7 @@ export interface ConfigView {
   max_capture_bytes: number;
   data_dir: string;
   drop_out_of_scope: boolean;
+  capture_in_scope_only: boolean;
   chromium_path: string;
   github_token: string;
   intruder_require_scope: boolean;

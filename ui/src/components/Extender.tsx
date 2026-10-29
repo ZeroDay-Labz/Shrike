@@ -14,7 +14,7 @@ const SAMPLE = `{
 }`;
 
 /**
- * The Addons hub: one clean side entry whose top tabs hold the BApp Store, the
+ * The Addons hub: one clean side entry whose top tabs hold the extension catalog, the
  * installed/runtime manager, native plugins, and a live console tab for each
  * running extension (a Java Swing UI still opens in its own OS window — see
  * ExtensionTab). Running-extension state is owned by App and passed in.
@@ -40,13 +40,13 @@ export function Extender(props: {
       <div className="ext-head">
         <h2>Addons</h2>
         <div className="seg ext-tabs">
-          <button className={sub === "store" ? "on" : ""} onClick={() => setSub("store")}>BApp Store</button>
+          <button className={sub === "store" ? "on" : ""} onClick={() => setSub("store")}>Extension catalog</button>
           <button className={sub === "installed" ? "on" : ""} onClick={() => setSub("installed")}>Installed</button>
           <button className={sub === "native" ? "on" : ""} onClick={() => setSub("native")}>Native plugins</button>
           {props.extMeta.map((m) => (
             <button key={m.sha256} className={sub === m.sha256 ? "on" : ""}
               title={m.name ?? m.sha256} onClick={() => setSub(m.sha256)}>
-              <span className="run-dot" /> {m.name ?? ("BApp " + m.sha256.slice(0, 6))}
+              <span className="run-dot" /> {m.name ?? ("Extension " + m.sha256.slice(0, 6))}
             </button>
           ))}
         </div>
@@ -74,7 +74,7 @@ export function Extender(props: {
 }
 
 /* -------------------------------------------------------------------------- */
-/* BApp Store (browse + install)                                              */
+/* Extension catalog (browse + install)                                              */
 /* -------------------------------------------------------------------------- */
 
 function BappStore(props: { onChanged: () => void }) {
@@ -268,7 +268,7 @@ function InstalledPanel(props: { onChanged: () => void; onOpenConsole: (sha: str
     <>
       <div className={jvmReady ? "bapp-jvm ok" : "bapp-jvm"}>
         <div className="bapp-jvm-head">
-          <b>Java runtime (BApp host)</b>
+          <b>Java runtime (extension host)</b>
           <span className={"pill " + (jvmReady ? "live" : "idle")}>{jvmReady ? "ready" : "not set up"}</span>
           <span className="spacer" />
           <button className="btn" disabled={!!setup} onClick={runJvmSetup}>{jvmReady ? "Re-run setup" : "Set up Java"}</button>
@@ -300,7 +300,7 @@ function InstalledPanel(props: { onChanged: () => void; onOpenConsole: (sha: str
 
       <h3 className="bapp-h3">Installed extensions</h3>
       <div className="bapp-imports">
-        {installed.length === 0 && <div className="hint">nothing installed yet — add from the BApp Store tab</div>}
+        {installed.length === 0 && <div className="hint">nothing installed yet — add one from the Extension catalog tab</div>}
         {installed.map((b) => (
           <div className={"bapp-pkg" + (b.enabled ? " on" : "")} key={b.sha256}>
             <div className="bapp-pkg-top">

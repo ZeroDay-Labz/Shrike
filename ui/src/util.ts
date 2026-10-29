@@ -7,11 +7,35 @@ export function humanBytes(n: number): string {
   return i === 0 ? `${n} B` : `${v.toFixed(1)} ${units[i]}`;
 }
 
+/** Wall-clock time of day, to the second (fits a narrow table column). */
 export function timeShort(ms: number): string {
   if (!ms) return "";
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
+}
+
+/** Full local date and time with milliseconds, for tooltips. */
+export function timeFull(ms: number): string {
+  if (!ms) return "";
   const d = new Date(ms);
-  return d.toLocaleTimeString([], { hour12: false }) + "." +
+  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour12: false }) + "." +
     String(d.getMilliseconds()).padStart(3, "0");
+}
+
+/** A compact label for a media type: `application/json; charset=utf-8` → `json`. */
+export function shortMime(mime?: string | null): string {
+  if (!mime) return "";
+  const base = mime.split(";")[0].trim().toLowerCase();
+  const known: Record<string, string> = {
+    "text/html": "html", "application/xhtml+xml": "html", "text/plain": "text",
+    "text/css": "css", "application/javascript": "js", "text/javascript": "js",
+    "application/x-www-form-urlencoded": "form", "multipart/form-data": "multipart",
+    "application/octet-stream": "binary", "image/svg+xml": "svg",
+  };
+  if (known[base]) return known[base];
+  if (base.endsWith("+json") || base.endsWith("/json")) return "json";
+  if (base.endsWith("+xml") || base.endsWith("/xml")) return "xml";
+  const sub = base.split("/")[1] ?? base;
+  return sub.replace(/^x-/, "");
 }
 
 /** Raw bytes of a body: decode base64, or UTF-8 encode the text. */

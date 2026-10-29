@@ -8,7 +8,7 @@
 //! Discovery is breadth-first in waves of up to `concurrency` fetches; it stops
 //! at `max_pages`, when the frontier empties, or when cancelled.
 
-use crate::core::{EventBus, Header, HttpService, TrafficEvent};
+use crate::core::{EventBus, Header, HttpService, TrafficEvent, TransactionIds};
 use crate::scope::Scope;
 use crate::sender::{RequestSpec, Sender};
 use hyper::Uri;
@@ -45,11 +45,13 @@ pub enum CrawlEvent {
 }
 
 /// Run a crawl from `seed` until `max_pages`, an empty frontier, or cancellation.
+#[allow(clippy::too_many_arguments)] // threads the engine's shared live state in
 pub async fn run_crawl(
     seed: String,
     sender: Arc<Sender>,
     scope: Arc<RwLock<Scope>>,
     bus: EventBus,
+    ids: TransactionIds,
     stop: Arc<AtomicBool>,
     opts: CrawlOptions,
     sink: Arc<dyn Fn(CrawlEvent) + Send + Sync>,
@@ -71,7 +73,6 @@ pub async fn run_crawl(
     frontier.push_back(start);
 
     let mut visited = 0usize;
-    let mut next_id = 1u64;
     let mut stopped = false;
 
     while visited < max_pages && !frontier.is_empty() {
@@ -96,8 +97,7 @@ pub async fn run_crawl(
             let Some(spec) = spec_for(&url) else { continue };
             let sender = Arc::clone(&sender);
             let bus = bus.clone();
-            let id = next_id;
-            next_id += 1;
+            let id = ids.next();
             set.spawn(async move {
                 match sender.send_transaction(spec, id, loopback()).await {
                     Ok(txn) => {

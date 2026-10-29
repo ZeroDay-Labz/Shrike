@@ -8,7 +8,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
   const [listen, setListen] = useState("127.0.0.1:8080");
   const [insecure, setInsecure] = useState(false);
   const [passthrough, setPassthrough] = useState("");
-  const [dropOutOfScope, setDropOutOfScope] = useState(false);
+  // Proxy scope mode: "all" global proxy, "capture" record only in-scope, "block" 403 out-of-scope.
+  const [scopeMode, setScopeMode] = useState<"all" | "capture" | "block">("all");
   const [chromiumPath, setChromiumPath] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [requireScope, setRequireScope] = useState(true);
@@ -25,7 +26,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       setListen(props.config.listen);
       setInsecure(props.config.insecure_upstream);
       setPassthrough(props.config.passthrough_hosts.join("\n"));
-      setDropOutOfScope(props.config.drop_out_of_scope);
+      setScopeMode(props.config.drop_out_of_scope ? "block" : props.config.capture_in_scope_only ? "capture" : "all");
       setChromiumPath(props.config.chromium_path ?? "");
       setGithubToken(props.config.github_token ?? "");
       setRequireScope(props.config.intruder_require_scope ?? true);
@@ -44,7 +45,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         listen,
         insecure_upstream: insecure,
         passthrough_hosts: passthrough.split(/\s+/).map((s) => s.trim()).filter(Boolean),
-        drop_out_of_scope: dropOutOfScope,
+        drop_out_of_scope: scopeMode === "block",
+        capture_in_scope_only: scopeMode === "capture",
         chromium_path: chromiumPath.trim(),
         github_token: githubToken.trim(),
         intruder_require_scope: requireScope,
@@ -84,10 +86,21 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       <label>Passthrough hosts (one per line; a leading dot matches subdomains)
         <textarea rows={5} value={passthrough} onChange={(e) => setPassthrough(e.target.value)} />
       </label>
-      <label className="row">
-        <input type="checkbox" checked={dropOutOfScope} onChange={(e) => setDropOutOfScope(e.target.checked)} />
-        Refuse out-of-scope requests at the proxy (403). Enforced in the Rust core. Needs scope rules below — with none, everything is refused.
-      </label>
+      <fieldset className="radio-group">
+        <legend>Proxy scope mode</legend>
+        <label className="radio">
+          <input type="radio" name="scopemode" checked={scopeMode === "all"} onChange={() => setScopeMode("all")} />
+          <span><b>Global proxy</b> — intercept and record all traffic (default).</span>
+        </label>
+        <label className="radio">
+          <input type="radio" name="scopemode" checked={scopeMode === "capture"} onChange={() => setScopeMode("capture")} />
+          <span><b>Capture in-scope only</b> — everything still browses normally, but only requests to the target scope below are recorded. Best for staying clean during an engagement. (With no scope rules, everything is captured.)</span>
+        </label>
+        <label className="radio">
+          <input type="radio" name="scopemode" checked={scopeMode === "block"} onChange={() => setScopeMode("block")} />
+          <span><b>Block out-of-scope</b> — refuse anything outside the scope with 403. Enforced in the Rust core. With no scope rules, everything is refused.</span>
+        </label>
+      </fieldset>
       <label className="row">
         <input type="checkbox" checked={requireScope} onChange={(e) => setRequireScope(e.target.checked)} />
         Require target scope for Intruder. Enforced in the Rust core: out-of-scope requests are blocked and never sent. With an empty scope, an attack is refused. Recommended on.
@@ -96,7 +109,7 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         <input value={chromiumPath} placeholder="leave blank to use the bundled / system Chromium"
           onChange={(e) => setChromiumPath(e.target.value)} />
       </label>
-      <label>GitHub token for the BApp Store (optional)
+      <label>GitHub token for the extension catalog (optional)
         <input type="password" value={githubToken} placeholder="lifts GitHub's 60-requests/hour limit when browsing/installing"
           onChange={(e) => setGithubToken(e.target.value)} />
       </label>

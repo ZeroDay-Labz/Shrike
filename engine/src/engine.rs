@@ -22,7 +22,8 @@ use crate::{
     sender::{RequestSpec, SendResult, Sender},
     store::{HistoryFilter, ProjectMeta, SiteNode, Store, TrafficStats},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::{
     collections::HashMap,
@@ -104,10 +105,24 @@ fn curl_text(url: &str, token: Option<&str>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Directory-name prefix for an installed multi-file Python extension.
+const PYTHON_TREE_PREFIX: &str = "py-";
+
 /// GitHub org whose repos mirror the public BApp Store catalog.
 const BAPP_ORG: &str = "PortSwigger";
 /// Re-fetch the remote catalog at most this often; serve the cache in between.
 const BAPP_CATALOG_TTL_MS: u128 = 24 * 60 * 60 * 1000;
+
+/// What installing an extension straight from its repository found.
+enum SourceInstall {
+    Installed(Vec<InstalledBapp>),
+    /// The loadable package only exists after compiling the source.
+    NeedsBuild {
+        build_command: Option<String>,
+    },
+    /// Nothing installable was recognised.
+    Nothing,
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CatalogCache {
@@ -192,8 +207,9 @@ pub struct Engine {
     match_replace: Arc<RwLock<MatchReplace>>,
     /// Installed plugins (Extender). Data-only registry; persisted in the project.
     plugins: RwLock<PluginRegistry>,
-    /// The integrated browser process, if one has been launched.
-    browser: Mutex<Option<std::process::Child>>,
+    /// Called when the integrated browser process exits, so the GUI can clear its
+    /// "browser launched" banner. Set once by the GUI at setup.
+    browser_exit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
     /// Bundled JVM host jars (set by the GUI once resolved from app resources).
     jvm_resources: Mutex<Option<JvmResources>>,
     /// Running Java BApp host processes, keyed by the extension's SHA-256.
@@ -266,7 +282,7 @@ impl Engine {
             interceptor: Arc::new(Interceptor::new()),
             match_replace,
             plugins,
-            browser: Mutex::new(None),
+            browser_exit_hook: Mutex::new(None),
             jvm_resources: Mutex::new(None),
             bapp_procs: Mutex::new(HashMap::new()),
             bapp_state: Mutex::new(HashMap::new()),
@@ -453,8 +469,9 @@ impl Engine {
         let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
         let scope = Arc::clone(&self.scope);
         let bus = self.ingest.clone();
+        let ids = self.store.transaction_ids();
         self.runtime.spawn(async move {
-            crate::crawler::run_crawl(seed, sender, scope, bus, stop, opts, sink).await;
+            crate::crawler::run_crawl(seed, sender, scope, bus, ids, stop, opts, sink).await;
         });
         Ok(())
     }
@@ -617,6 +634,7 @@ impl Engine {
         let scope = Arc::clone(&self.scope);
         let interceptor = Arc::clone(&self.interceptor);
         let match_replace = Arc::clone(&self.match_replace);
+        let ids = self.store.transaction_ids();
 
         let task = self.runtime.spawn(async move {
             // The ingest bus is owned by the engine and is NOT drained here — it
@@ -629,6 +647,7 @@ impl Engine {
                 scope,
                 interceptor,
                 match_replace,
+                ids,
                 shutdown,
             )
             .await
@@ -895,9 +914,22 @@ impl Engine {
             profile_dir: profile_dir.clone(),
             start_url: "http://shrike/".to_string(),
         };
-        let child = browser::launch(&cfg)?;
+        let mut child = browser::launch(&cfg)?;
         let pid = child.id();
-        *self.browser.lock().expect("browser lock") = Some(child);
+        // Watch the process in the background and notify the GUI when it exits, so
+        // the "browser launched" banner clears once the user closes the browser.
+        let hook = self
+            .browser_exit_hook
+            .lock()
+            .expect("browser hook lock")
+            .clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            info!(pid, "integrated browser exited");
+            if let Some(hook) = hook {
+                hook();
+            }
+        });
         info!(pid, %listen, "integrated browser launched");
         Ok(BrowserStatus {
             pid,
@@ -905,6 +937,12 @@ impl Engine {
             profile: profile_dir.display().to_string(),
             chromium: chromium_bin.display().to_string(),
         })
+    }
+
+    /// Register a callback fired when the integrated browser process exits. The GUI
+    /// uses it to clear its "browser launched" banner. Set once at setup.
+    pub fn set_browser_exit_hook<F: Fn() + Send + Sync + 'static>(&self, f: F) {
+        *self.browser_exit_hook.lock().expect("browser hook lock") = Some(Arc::new(f));
     }
 
     // --- BApp Store (catalog + safe inspection; nothing is executed) ---
@@ -1019,18 +1057,41 @@ impl Engine {
             });
         }
 
+        // Most catalog mirrors publish no releases, and GitHub answers that with
+        // a 404 — which means "no release package", not a failed install.
         let api = format!("https://api.github.com/repos/{BAPP_ORG}/{id}/releases/latest");
-        let body = curl_text(&api, self.github_token().as_deref())
-            .with_context(|| format!("looking up the latest release for {id}"))?;
-        if let Some((url, _kind)) = bapp::parse_release_asset(&body) {
+        let release = match curl_text(&api, self.github_token().as_deref()) {
+            Ok(body) => bapp::parse_release_asset(&body),
+            Err(e) => {
+                info!(id, error = %e, "no release package; trying the source tree");
+                None
+            }
+        };
+        if let Some((url, _kind)) = release {
             return Ok(InstallOutcome::Installed {
                 installed: self.install_from_url(&url, Some(id))?,
             });
         }
-        // No release package — grab it from source: a committed .jar/.bapp or a
-        // Python entry point anywhere in the repo tree (no compilation needed).
-        if let Some(installed) = self.try_install_from_source(id)? {
-            return Ok(InstallOutcome::Installed { installed });
+        // No release package — install from source when that needs no
+        // compilation: a committed package, or a Python extension's module tree.
+        match self.try_install_from_source(id)? {
+            SourceInstall::Installed(installed) => {
+                return Ok(InstallOutcome::Installed { installed });
+            }
+            SourceInstall::NeedsBuild { build_command } => {
+                return Ok(InstallOutcome::NotInstallable {
+                    reason: format!(
+                        "{} is published only as source code that has to be compiled before it can \
+                         run{}. Build it, then add the resulting .jar with Install from file.",
+                        entry.name,
+                        build_command
+                            .map(|c| format!(" (its build command is `{c}`)"))
+                            .unwrap_or_default()
+                    ),
+                    source_url: source,
+                });
+            }
+            SourceInstall::Nothing => {}
         }
         Ok(InstallOutcome::NotInstallable {
             reason: format!(
@@ -1042,27 +1103,58 @@ impl Engine {
         })
     }
 
-    /// Install a BApp straight from its repo source, without compiling: list the
-    /// repo tree, then try each candidate (committed `.jar`/`.bapp` first, then
-    /// `.py`), downloading the raw file and installing the first that fits. A `.py`
-    /// must look like a legacy BApp (a `BurpExtender` with `registerExtenderCallbacks`).
-    fn try_install_from_source(&self, id: &str) -> Result<Option<Vec<InstalledBapp>>> {
+    /// Install an extension straight from its repository, without compiling.
+    /// The repository's `BappManifest.bmf` names exactly what to load, so it is
+    /// followed when present: a Python extension's whole module tree, or a
+    /// committed package. Without a manifest, fall back to the first plausible
+    /// committed `.jar`/`.bapp`, or a `.py` that looks like an extension.
+    fn try_install_from_source(&self, id: &str) -> Result<SourceInstall> {
         let tree_api =
             format!("https://api.github.com/repos/{BAPP_ORG}/{id}/git/trees/HEAD?recursive=1");
         let body = match curl_text(&tree_api, self.github_token().as_deref()) {
             Ok(b) => b,
-            Err(_) => return Ok(None),
+            Err(_) => return Ok(SourceInstall::Nothing),
         };
         let paths = bapp::parse_tree_paths(&body);
-        let dl_dir = self.config().data_dir.join("bapps").join("download");
-        for path in bapp::source_candidates(&paths).into_iter().take(8) {
-            let raw = format!(
+        let raw_url = |path: &str| {
+            format!(
                 "https://raw.githubusercontent.com/{BAPP_ORG}/{id}/HEAD/{}",
                 path.replace(' ', "%20")
-            );
+            )
+        };
+        let dl_dir = self.config().data_dir.join("bapps").join("download");
+
+        if paths.iter().any(|p| p == "BappManifest.bmf")
+            && let Ok(text) = curl_text(&raw_url("BappManifest.bmf"), None)
+            && let manifest = bapp::parse_manifest(&text)
+            && let Some(entry) = manifest.entry_point.as_deref()
+        {
+            if manifest.is_python() {
+                if let Some(files) = bapp::python_tree_files(&paths, entry) {
+                    return self
+                        .install_python_tree(id, &files, entry, &raw_url)
+                        .map(SourceInstall::Installed);
+                }
+            } else if paths.iter().any(|p| p == entry) && bapp::safe_rel_path(entry).is_some() {
+                // A ready-built package committed to the repository.
+                let fname = entry.rsplit('/').next().unwrap_or("extension.jar");
+                let tmp = dl_dir.join(fname);
+                download(&raw_url(entry), &tmp)?;
+                let res = self.install_pkg(&tmp.to_string_lossy(), Some(id));
+                let _ = std::fs::remove_file(&tmp);
+                return res.map(SourceInstall::Installed);
+            } else {
+                // The entry point is a build output (e.g. `target/x.jar`).
+                return Ok(SourceInstall::NeedsBuild {
+                    build_command: manifest.build_command,
+                });
+            }
+        }
+
+        for path in bapp::source_candidates(&paths).into_iter().take(8) {
             let fname = path.rsplit('/').next().unwrap_or("extension");
             let tmp = dl_dir.join(fname);
-            if download(&raw, &tmp).is_err() {
+            if download(&raw_url(&path), &tmp).is_err() {
                 continue;
             }
             if fname.to_ascii_lowercase().ends_with(".py") {
@@ -1076,9 +1168,66 @@ impl Engine {
             }
             let res = self.install_pkg(&tmp.to_string_lossy(), Some(id));
             let _ = std::fs::remove_file(&tmp);
-            return res.map(Some);
+            return res.map(SourceInstall::Installed);
         }
-        Ok(None)
+        Ok(SourceInstall::Nothing)
+    }
+
+    /// Install a multi-file Python extension: fetch its module tree into a
+    /// directory of its own (so its `import helpers.x` style imports resolve),
+    /// identified by a hash over every file, and record the entry script as the
+    /// thing to run. Nothing is executed here.
+    fn install_python_tree(
+        &self,
+        id: &str,
+        files: &[String],
+        entry: &str,
+        raw_url: &dyn Fn(&str) -> String,
+    ) -> Result<Vec<InstalledBapp>> {
+        let bapps = self.config().data_dir.join("bapps");
+        let staging = bapps.join("download").join(format!("{id}-tree"));
+        let _ = std::fs::remove_dir_all(&staging);
+        let mut hasher = Sha256::new();
+        for rel in files {
+            let rel_path = bapp::safe_rel_path(rel)
+                .ok_or_else(|| anyhow!("unsafe path in the repository: {rel}"))?;
+            let dest = staging.join(rel_path);
+            download(&raw_url(rel), &dest).with_context(|| format!("downloading {rel}"))?;
+            let bytes = std::fs::read(&dest).with_context(|| format!("reading {rel}"))?;
+            hasher.update(rel.as_bytes());
+            hasher.update([0]);
+            hasher.update(&bytes);
+            hasher.update([0]);
+        }
+        let entry_text = std::fs::read_to_string(staging.join(entry)).unwrap_or_default();
+        if !(entry_text.contains("BurpExtender")
+            && entry_text.contains("registerExtenderCallbacks"))
+        {
+            let _ = std::fs::remove_dir_all(&staging);
+            bail!("{entry} does not look like a Python extension (no BurpExtender class)");
+        }
+        let sha256 = hex::encode(hasher.finalize());
+        let dir = bapps.join(format!("{PYTHON_TREE_PREFIX}{}", &sha256[..16]));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::rename(&staging, &dir).context("finalizing the extension directory")?;
+        info!(
+            id,
+            files = files.len(),
+            "installed Python extension module tree"
+        );
+        self.record_install(InstalledBapp {
+            sha256,
+            filename: entry.rsplit('/').next().unwrap_or(entry).to_string(),
+            path: dir.join(entry).display().to_string(),
+            format: "python".into(),
+            name: None,
+            enabled: false,
+            status: self.install_status("python"),
+            registered: vec![],
+            outputs: vec![],
+            errors: vec![],
+            origin: Some(id.to_string()),
+        })
     }
 
     pub fn bapp_imports(&self) -> Result<Vec<PackageInspection>> {
@@ -1176,21 +1325,7 @@ impl Engine {
         let dest = dir.join(format!("{short}.{ext}"));
         std::fs::copy(src, &dest).with_context(|| format!("copying into {}", dest.display()))?;
 
-        // Classify only — no code runs at install time. The status tells the user
-        // what pressing Run will do; name/registrations are captured then.
-        let status = match inspection.format.as_str() {
-            "jar" | "bapp" => "installed — not loaded (press Run to load)".to_string(),
-            "python" => {
-                let jython = self.jvm_runtime().is_some_and(|rt| rt.jython_jar.is_some());
-                if jython {
-                    "installed — not loaded (Python/Jython; press Run)".to_string()
-                } else {
-                    "installed — needs Jython (Install Jython in Addons, then Run)".to_string()
-                }
-            }
-            other => format!("installed — unsupported format: {other}"),
-        };
-
+        let status = self.install_status(&inspection.format);
         let record = InstalledBapp {
             sha256: inspection.sha256.clone(),
             filename: inspection.filename,
@@ -1204,6 +1339,28 @@ impl Engine {
             errors: vec![],
             origin: origin.map(str::to_string),
         };
+        self.record_install(record)
+    }
+
+    /// Classify only — no code runs at install time. The status tells the user
+    /// what pressing Run will do; name/registrations are captured then.
+    fn install_status(&self, format: &str) -> String {
+        match format {
+            "jar" | "bapp" => "installed — not loaded (press Run to load)".to_string(),
+            "python" => {
+                let jython = self.jvm_runtime().is_some_and(|rt| rt.jython_jar.is_some());
+                if jython {
+                    "installed — not loaded (Python/Jython; press Run)".to_string()
+                } else {
+                    "installed — needs Jython (Install Jython in Addons, then Run)".to_string()
+                }
+            }
+            other => format!("installed — unsupported format: {other}"),
+        }
+    }
+
+    /// Add (or replace, by SHA-256) an installed-extension record and persist.
+    fn record_install(&self, record: InstalledBapp) -> Result<Vec<InstalledBapp>> {
         let mut list = self.bapp_installed()?;
         list.retain(|b| b.sha256 != record.sha256);
         list.push(record);
@@ -1239,7 +1396,25 @@ impl Engine {
     pub fn bapp_uninstall(&self, sha256: &str) -> Result<Vec<InstalledBapp>> {
         let mut list = self.bapp_installed()?;
         if let Some(b) = list.iter().find(|b| b.sha256 == sha256) {
-            let _ = std::fs::remove_file(&b.path);
+            let path = Path::new(&b.path);
+            // A Python module tree lives in its own `py-<hash>` directory under
+            // the managed BApp dir; remove the whole tree, never anything else.
+            let bapps = self.config().data_dir.join("bapps");
+            match path
+                .ancestors()
+                .find(|a| a.parent() == Some(bapps.as_path()))
+            {
+                Some(dir)
+                    if dir
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with(PYTHON_TREE_PREFIX)) =>
+                {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                _ => {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
         }
         list.retain(|b| b.sha256 != sha256);
         self.store
@@ -1526,8 +1701,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::new(test_config(dir.path())).unwrap();
 
-        // A bare HTTPS HTML response: missing every security header.
-        let make_txn = || {
+        // A bare HTTPS HTML response: missing every security header. Each
+        // observation is a distinct transaction with its own allocator id, as
+        // real capture would produce.
+        let make_txn = |id: u64| {
             let (rp, _) = hyper::Request::builder()
                 .method("GET")
                 .uri("https://lab.test/")
@@ -1535,7 +1712,7 @@ mod tests {
                 .unwrap()
                 .into_parts();
             let request = CapturedRequest::from_parts(
-                1,
+                id,
                 "127.0.0.1:9000".parse().unwrap(),
                 &rp,
                 Bytes::new(),
@@ -1559,8 +1736,10 @@ mod tests {
             }
         };
 
+        let ids = engine.store().transaction_ids();
+        let (first, second) = (ids.next(), ids.next());
         let bus = engine.ingest_bus();
-        bus.emit(TrafficEvent::Completed(Arc::new(make_txn())));
+        bus.emit(TrafficEvent::Completed(Arc::new(make_txn(first))));
 
         // The scanner runs on its own thread; poll briefly for the findings.
         let mut count = 0;
@@ -1573,14 +1752,39 @@ mod tests {
         }
         assert!(count >= 3, "expected several header findings, got {count}");
 
-        // Re-emitting the same transaction must not create duplicates.
-        bus.emit(TrafficEvent::Completed(Arc::new(make_txn())));
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // A second request to the same host + path re-observes the same issues:
+        // the dedup keys (check|host|path) match, so the existing findings gain
+        // the new transaction as evidence instead of being duplicated.
+        bus.emit(TrafficEvent::Completed(Arc::new(make_txn(second))));
+        let mut merged = false;
+        for _ in 0..50 {
+            merged = engine
+                .findings_list()
+                .unwrap()
+                .iter()
+                .any(|f| f.transaction_ids.contains(&second));
+            if merged {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(merged, "re-observation was merged into existing evidence");
+        let findings = engine.findings_list().unwrap();
         assert_eq!(
-            engine.findings_list().unwrap().len(),
+            findings.len(),
             count,
             "passive findings are deduped on re-observation"
         );
+        assert!(
+            findings.iter().all(|f| f.transaction_ids.contains(&first)),
+            "every finding keeps its original evidence"
+        );
+
+        // Both observations persisted as their own history rows, without conflict.
+        engine.store().flush().unwrap();
+        assert!(engine.history_get(first).unwrap().is_some());
+        assert!(engine.history_get(second).unwrap().is_some());
+        assert_eq!(engine.store().persist_failures(), 0);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// One entry in the bundled, offline catalog of notable BApps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +165,7 @@ pub fn parse_tree_paths(json: &str) -> Vec<String> {
 pub fn source_candidates(paths: &[String]) -> Vec<String> {
     let is_noise = |p: &str| {
         let l = p.to_ascii_lowercase();
-        l.contains("test") || l.contains("example") || l.contains("sample") || l.contains("/lib/")
+        l.contains("test") || l.contains("example") || l.contains("sample") || is_dependency_dir(&l)
     };
     let depth = |p: &String| p.matches('/').count();
     let mut jars: Vec<&String> = paths
@@ -182,6 +182,112 @@ pub fn source_candidates(paths: &[String]) -> Vec<String> {
     jars.sort_by_key(|p| depth(p));
     pys.sort_by_key(|p| depth(p));
     jars.into_iter().chain(pys).cloned().collect()
+}
+
+/// True for paths inside a directory of bundled third-party dependencies (e.g.
+/// `libs/zap-2.4.3.jar`) or build tooling — never the extension itself.
+fn is_dependency_dir(lower: &str) -> bool {
+    lower
+        .split('/')
+        .rev()
+        .skip(1) // the file name itself
+        .any(|dir| {
+            matches!(
+                dir,
+                // third-party / tooling
+                "lib" | "libs" | "vendor" | "third_party" | "wrapper" | ".gradle" | ".mvn"
+                // build outputs (a committed jar here is a stale artifact; build from source)
+                | "target" | "build" | "out" | "bin"
+            )
+        })
+}
+
+/// The fields of a repository's `BappManifest.bmf` the installer acts on. The
+/// manifest is plain `Key: Value` lines.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BappManifest {
+    pub name: Option<String>,
+    /// Path of the package (jar) or script (py) to load, relative to the repo.
+    pub entry_point: Option<String>,
+    /// 1 = Java, 2 = Python, 3 = Ruby.
+    pub extension_type: Option<u8>,
+    /// How the published package is built from source, if it must be.
+    pub build_command: Option<String>,
+}
+
+impl BappManifest {
+    /// Whether the manifest describes a Python (Jython) extension.
+    pub fn is_python(&self) -> bool {
+        self.extension_type == Some(2)
+            || self
+                .entry_point
+                .as_deref()
+                .is_some_and(|e| e.to_ascii_lowercase().ends_with(".py"))
+    }
+}
+
+pub fn parse_manifest(text: &str) -> BappManifest {
+    let mut m = BappManifest::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        let value = (!value.is_empty()).then(|| value.to_string());
+        match key.trim() {
+            "Name" => m.name = value,
+            "EntryPoint" => m.entry_point = value,
+            "ExtensionType" => m.extension_type = value.and_then(|v| v.parse().ok()),
+            "BuildCommand" => m.build_command = value,
+            _ => {}
+        }
+    }
+    m
+}
+
+/// A repository-relative path that is safe to recreate under a local directory:
+/// plain components only — no `..`, no absolute paths, no backslashes.
+pub fn safe_rel_path(p: &str) -> Option<PathBuf> {
+    if p.is_empty() || p.contains('\\') || p.contains('\0') {
+        return None;
+    }
+    let path = Path::new(p);
+    path.components()
+        .all(|c| matches!(c, Component::Normal(_)))
+        .then(|| path.to_path_buf())
+}
+
+/// Upper bound on files fetched for one Python extension's module tree.
+pub const MAX_PYTHON_TREE_FILES: usize = 300;
+
+/// The Python files a multi-file extension needs alongside its `entry` script:
+/// every `.py` in the repository outside test/example directories, entry first.
+/// `None` if the entry isn't in the tree or the tree is implausibly large.
+pub fn python_tree_files(paths: &[String], entry: &str) -> Option<Vec<String>> {
+    if !paths.iter().any(|p| p == entry) || safe_rel_path(entry).is_none() {
+        return None;
+    }
+    let in_noise_dir = |p: &str| {
+        p.to_ascii_lowercase().split('/').rev().skip(1).any(|d| {
+            matches!(
+                d,
+                "test" | "tests" | "example" | "examples" | "sample" | "samples"
+            )
+        })
+    };
+    let mut files = vec![entry.to_string()];
+    files.extend(
+        paths
+            .iter()
+            .filter(|p| {
+                p.as_str() != entry
+                    && p.to_ascii_lowercase().ends_with(".py")
+                    && !in_noise_dir(p)
+                    && safe_rel_path(p).is_some()
+            })
+            .cloned(),
+    );
+    (files.len() <= MAX_PYTHON_TREE_FILES).then_some(files)
 }
 
 /// Pick a downloadable extension asset from a GitHub `releases/latest` response:
@@ -380,6 +486,67 @@ mod tests {
         let py_order: Vec<&String> = cands.iter().filter(|p| p.ends_with(".py")).collect();
         assert_eq!(py_order, vec!["Ext.py", "deep/dir/Ext.py"]);
         assert!(!cands.iter().any(|p| p.contains("test")));
+    }
+
+    #[test]
+    fn dependency_and_build_dirs_are_not_install_candidates() {
+        // Retire.js ships its loadable jar only as a build output, and bundles a
+        // third-party jar under libs/ — neither is a direct-install candidate.
+        let paths = parse_tree_paths(
+            r#"{"tree":[
+              {"path":"libs/bundled-dep-2.4.3.jar","type":"blob"},
+              {"path":"scanner-plugin/target/scanner-plugin-3.jar","type":"blob"},
+              {"path":"build.gradle","type":"blob"}
+            ]}"#,
+        );
+        assert!(
+            source_candidates(&paths).is_empty(),
+            "a bundled dependency jar is not the extension"
+        );
+    }
+
+    #[test]
+    fn manifest_parses_python_and_java_entry_points() {
+        let py = parse_manifest(
+            "Name: Autorize\nExtensionType: 2\nEntryPoint: Autorize.py\nBuildCommand: \n",
+        );
+        assert_eq!(py.name.as_deref(), Some("Autorize"));
+        assert_eq!(py.entry_point.as_deref(), Some("Autorize.py"));
+        assert!(py.is_python());
+        assert_eq!(py.build_command, None, "an empty value is None");
+
+        let java = parse_manifest(
+            "Name: Scanner Plugin\nExtensionType: 1\nEntryPoint: target/scanner-plugin-3.jar\nBuildCommand: mvn package\n",
+        );
+        assert!(!java.is_python());
+        assert_eq!(java.build_command.as_deref(), Some("mvn package"));
+    }
+
+    #[test]
+    fn python_tree_collects_modules_entry_first_and_skips_tests() {
+        let paths = vec![
+            "Autorize.py".to_string(),
+            "authorization/__init__.py".to_string(),
+            "authorization/authorization.py".to_string(),
+            "test/test_it.py".to_string(),
+            "README.md".to_string(),
+        ];
+        let files = python_tree_files(&paths, "Autorize.py").unwrap();
+        assert_eq!(files.first().map(String::as_str), Some("Autorize.py"));
+        assert!(files.iter().any(|p| p == "authorization/authorization.py"));
+        assert!(!files.iter().any(|p| p.contains("test")));
+        assert!(!files.iter().any(|p| p.ends_with(".md")));
+        // Entry not in the tree -> None (don't guess).
+        assert!(python_tree_files(&paths, "Missing.py").is_none());
+    }
+
+    #[test]
+    fn safe_rel_path_rejects_traversal_and_absolute_paths() {
+        assert!(safe_rel_path("helpers/http.py").is_some());
+        assert!(safe_rel_path("../etc/passwd").is_none());
+        assert!(safe_rel_path("/etc/passwd").is_none());
+        assert!(safe_rel_path("a/../../b").is_none());
+        assert!(safe_rel_path("").is_none());
     }
 
     #[test]

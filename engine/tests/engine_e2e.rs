@@ -187,6 +187,57 @@ fn engine_refuses_out_of_scope_targets_when_enforcing() {
     engine.stop_proxy().unwrap();
 }
 
+/// Capture-in-scope-only: out-of-scope traffic is still forwarded (the proxy
+/// stays usable for general browsing) but only the target scope is recorded.
+#[test]
+fn capture_in_scope_only_forwards_everything_but_records_only_the_target() {
+    let helper = Runtime::new().unwrap();
+    let target = helper.block_on(spawn_upstream());
+    let other = helper.block_on(spawn_upstream());
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        upstream_tls: UpstreamTlsMode::Verify,
+        capture_in_scope_only: true,
+        ..ProxyConfig::default()
+    };
+    let engine = Engine::new(config).unwrap();
+    // Only the target port is in scope.
+    engine
+        .set_scope(vec![ScopeRule {
+            port: Some(target.port()),
+            ..ScopeRule::include_host("127.0.0.1")
+        }])
+        .unwrap();
+    let proxy_addr = engine.start_proxy().unwrap();
+
+    // Both are forwarded and answered — browsing is not blocked.
+    let in_scope = helper.block_on(through_proxy(proxy_addr, target, "/target"));
+    assert!(
+        in_scope.contains("hello GET /target"),
+        "target answered: {in_scope:?}"
+    );
+    let out_scope = helper.block_on(through_proxy(proxy_addr, other, "/elsewhere"));
+    assert!(
+        out_scope.contains("hello GET /elsewhere"),
+        "out-of-scope still forwarded: {out_scope:?}"
+    );
+
+    // Only the in-scope request is recorded. Wait for it, then give any stray
+    // out-of-scope capture a moment to appear (it must not).
+    wait_for_rows(&engine, 1);
+    std::thread::sleep(Duration::from_millis(150));
+    let rows = engine
+        .history_page(&HistoryFilter::default(), 50, 0)
+        .unwrap();
+    assert_eq!(rows.len(), 1, "only the target is captured, got {rows:?}");
+    assert!(rows[0].url.ends_with("/target"));
+
+    engine.stop_proxy().unwrap();
+}
+
 /// Repeater path: the engine sends an edited request and returns the response.
 #[test]
 fn repeater_send_through_engine() {

@@ -93,8 +93,9 @@ export const api = {
 };
 
 export const events = {
-  onCompleted: (cb: (t: TransactionSummary) => void): Promise<UnlistenFn> =>
-    listen<TransactionSummary>("traffic-completed", (e) => cb(e.payload)),
+  /** Newly captured transactions, oldest first, flushed every ~80 ms. */
+  onTrafficBatch: (cb: (rows: TransactionSummary[]) => void): Promise<UnlistenFn> =>
+    listen<TransactionSummary[]>("traffic-batch", (e) => cb(e.payload)),
   onWs: (cb: (w: WsMessage) => void): Promise<UnlistenFn> =>
     listen<WsMessage>("traffic-ws", (e) => cb(e.payload)),
   onIntruder: (cb: (ev: AttackEvent) => void): Promise<UnlistenFn> =>
@@ -109,4 +110,6 @@ export const events = {
     listen<import("./types").CrawlEvent>("crawl-progress", (e) => cb(e.payload)),
   onScan: (cb: (ev: import("./types").ActiveScanEvent) => void): Promise<UnlistenFn> =>
     listen<import("./types").ActiveScanEvent>("scan-progress", (e) => cb(e.payload)),
+  onBrowserClosed: (cb: () => void): Promise<UnlistenFn> =>
+    listen("browser-closed", () => cb()),
 };

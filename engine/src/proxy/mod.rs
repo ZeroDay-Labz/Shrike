@@ -11,7 +11,7 @@ pub use landing::{CERT_FILENAME, LANDING_HOSTS};
 use crate::{
     ca::{CaManager, LeafCertAuthority},
     config::ProxyConfig,
-    core::EventBus,
+    core::{EventBus, TransactionIds},
     intercept::Interceptor,
     match_replace::MatchReplace,
     scope::Scope,
@@ -41,6 +41,7 @@ pub async fn serve(
     scope: Arc<RwLock<Scope>>,
     interceptor: Arc<Interceptor>,
     match_replace: Arc<RwLock<MatchReplace>>,
+    ids: TransactionIds,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -48,7 +49,15 @@ pub async fn serve(
     let authority = LeafCertAuthority::new(Arc::clone(&ca), Arc::clone(&provider));
     let tls = upstream::client_tls_config(config.upstream_tls, provider)?;
     let connector = upstream::https_connector(tls.clone());
-    let handler = TrafficHandler::new(bus, ca, config.clone(), scope, interceptor, match_replace);
+    let handler = TrafficHandler::new(
+        bus,
+        ca,
+        config.clone(),
+        scope,
+        interceptor,
+        match_replace,
+        ids,
+    );
 
     let local = listener.local_addr().context("reading listener address")?;
     info!(%local, "proxy listening");

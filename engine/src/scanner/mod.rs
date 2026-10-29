@@ -5,6 +5,7 @@
 //! driven) builds on the same Findings output and lands in an `active` module.
 
 pub mod active;
+pub mod jwt_scan;
 pub mod passive;
 
 pub use active::{ActiveScanConfig, ActiveScanEvent, run_active_scan};

@@ -1,8 +1,8 @@
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
 import type { RepeaterTab } from "../repeater";
-import { MessageViewer } from "./MessageViewer";
-import { humanBytes, statusClass } from "../util";
+import { BodyBadge, MessageViewer } from "./MessageViewer";
+import { statusClass } from "../util";
 import { SplitPane } from "./SplitPane";
 import { shrikeEditorTheme } from "../cm-theme";
 
@@ -78,7 +78,7 @@ export function Repeater(props: {
               ) : tab.responseView ? (
                 <>
                   <span className={statusClass(tab.status)}>{tab.status} {tab.responseView.reason}</span>
-                  <span className="mut">{humanBytes(tab.responseView.body.wire_len)}</span>
+                  <BodyBadge body={tab.responseView.body} />
                   <span className="mut">{tab.durationMs} ms</span>
                 </>
               ) : (

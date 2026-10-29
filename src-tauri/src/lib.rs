@@ -30,9 +30,39 @@ struct AppState {
     engine: Arc<Engine>,
 }
 
-/// A [`TrafficSink`] that re-emits bus events to the webview.
+/// A [`TrafficSink`] that re-emits bus events to the webview. Completed
+/// transactions are queued and sent in batches by [`spawn_traffic_flusher`];
+/// everything else (intercepts above all) is emitted immediately.
 struct TauriSink {
     app: AppHandle,
+    batch: TrafficBatch,
+}
+
+/// Captured-traffic summaries waiting to go to the webview. A burst of traffic
+/// then costs one IPC message and one UI render per flush, not one per request.
+#[derive(Clone, Default)]
+struct TrafficBatch(Arc<std::sync::Mutex<Vec<TransactionSummary>>>);
+
+/// How often queued traffic is flushed to the webview.
+const TRAFFIC_FLUSH: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// Emit queued summaries as one `traffic-batch` event (oldest first) every
+/// [`TRAFFIC_FLUSH`], for the lifetime of the app.
+fn spawn_traffic_flusher(app: AppHandle, batch: TrafficBatch) {
+    std::thread::Builder::new()
+        .name("shrike-ui-traffic".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(TRAFFIC_FLUSH);
+                let rows = std::mem::take(&mut *batch.0.lock().expect("traffic batch lock"));
+                if !rows.is_empty()
+                    && let Err(e) = app.emit("traffic-batch", rows)
+                {
+                    warn!(error = %e, "failed to emit traffic batch to the webview");
+                }
+            }
+        })
+        .expect("spawning the traffic flusher");
 }
 
 #[derive(Clone, Serialize)]
@@ -63,9 +93,14 @@ struct InterceptView {
 impl TrafficSink for TauriSink {
     fn handle(&mut self, event: &TrafficEvent) {
         let result = match event {
-            TrafficEvent::Completed(tx) => self
-                .app
-                .emit("traffic-completed", TransactionSummary::from(tx.as_ref())),
+            TrafficEvent::Completed(tx) => {
+                self.batch
+                    .0
+                    .lock()
+                    .expect("traffic batch lock")
+                    .push(TransactionSummary::from(tx.as_ref()));
+                Ok(())
+            }
             TrafficEvent::WebSocketMessage(ws) => {
                 let view = WsView {
                     url: ws.url.clone(),
@@ -123,6 +158,8 @@ struct ConfigView {
     data_dir: String,
     drop_out_of_scope: bool,
     #[serde(default)]
+    capture_in_scope_only: bool,
+    #[serde(default)]
     chromium_path: String,
     #[serde(default)]
     github_token: String,
@@ -152,6 +189,7 @@ impl ConfigView {
             max_capture_bytes: c.max_capture_bytes,
             data_dir: c.data_dir.display().to_string(),
             drop_out_of_scope: c.drop_out_of_scope,
+            capture_in_scope_only: c.capture_in_scope_only,
             chromium_path: c.chromium_path.clone().unwrap_or_default(),
             github_token: c.github_token.clone(),
             intruder_require_scope: c.intruder_require_scope,
@@ -176,6 +214,7 @@ impl ConfigView {
             max_capture_bytes: self.max_capture_bytes,
             passthrough_hosts: self.passthrough_hosts.clone(),
             drop_out_of_scope: self.drop_out_of_scope,
+            capture_in_scope_only: self.capture_in_scope_only,
             chromium_path: {
                 let p = self.chromium_path.trim();
                 if p.is_empty() {
@@ -207,6 +246,19 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Run engine work on Tauri's blocking pool. Synchronous commands execute on
+/// the main (webview) thread, so anything touching disk, the network or child
+/// processes goes through here to keep the window responsive.
+async fn off_main<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&Engine) -> CmdResult<T> + Send + 'static,
+) -> CmdResult<T> {
+    let engine = Arc::clone(&state.engine);
+    tauri::async_runtime::spawn_blocking(move || f(&engine))
+        .await
+        .map_err(err)?
+}
+
 // ---- commands ----
 
 #[tauri::command]
@@ -224,21 +276,27 @@ fn proxy_status(state: State<AppState>) -> ProxyStatus {
 }
 
 #[tauri::command]
-fn proxy_start(state: State<AppState>) -> CmdResult<ProxyStatus> {
-    let addr = state.engine.start_proxy().map_err(err)?;
-    Ok(ProxyStatus {
-        running: true,
-        listen: addr.to_string(),
+async fn proxy_start(state: State<'_, AppState>) -> CmdResult<ProxyStatus> {
+    off_main(&state, |e| {
+        let addr = e.start_proxy().map_err(err)?;
+        Ok(ProxyStatus {
+            running: true,
+            listen: addr.to_string(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn proxy_stop(state: State<AppState>) -> CmdResult<ProxyStatus> {
-    state.engine.stop_proxy().map_err(err)?;
-    Ok(ProxyStatus {
-        running: false,
-        listen: state.engine.config().listen.to_string(),
+async fn proxy_stop(state: State<'_, AppState>) -> CmdResult<ProxyStatus> {
+    off_main(&state, |e| {
+        e.stop_proxy().map_err(err)?;
+        Ok(ProxyStatus {
+            running: false,
+            listen: e.config().listen.to_string(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -247,62 +305,65 @@ fn config_get(state: State<AppState>) -> ConfigView {
 }
 
 #[tauri::command]
-fn config_set(state: State<AppState>, config: ConfigView) -> CmdResult<ConfigView> {
-    let base = state.engine.config();
-    let next = config.apply_to(&base)?;
-    state.engine.set_config(next).map_err(err)?;
-    Ok(ConfigView::from_config(&state.engine.config()))
+async fn config_set(state: State<'_, AppState>, config: ConfigView) -> CmdResult<ConfigView> {
+    // Restarts the proxy when it is running, which can take a moment.
+    off_main(&state, move |e| {
+        let next = config.apply_to(&e.config())?;
+        e.set_config(next).map_err(err)?;
+        Ok(ConfigView::from_config(&e.config()))
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_page(
-    state: State<AppState>,
+async fn history_page(
+    state: State<'_, AppState>,
     filter: HistoryFilter,
     limit: u32,
     offset: u32,
 ) -> CmdResult<Vec<TransactionSummary>> {
-    state
-        .engine
-        .history_page(&filter, limit, offset)
-        .map_err(err)
+    off_main(&state, move |e| {
+        e.history_page(&filter, limit, offset).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_count(state: State<AppState>, filter: HistoryFilter) -> CmdResult<u64> {
-    state.engine.history_count(&filter).map_err(err)
+async fn history_count(state: State<'_, AppState>, filter: HistoryFilter) -> CmdResult<u64> {
+    off_main(&state, move |e| e.history_count(&filter).map_err(err)).await
 }
 
 #[tauri::command]
-fn history_query(
-    state: State<AppState>,
+async fn history_query(
+    state: State<'_, AppState>,
     query: String,
     limit: u32,
     offset: u32,
 ) -> CmdResult<Vec<TransactionSummary>> {
-    state
-        .engine
-        .history_query(&query, limit, offset)
-        .map_err(err)
+    off_main(&state, move |e| {
+        e.history_query(&query, limit, offset).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_query_count(state: State<AppState>, query: String) -> CmdResult<u64> {
-    state.engine.history_query_count(&query).map_err(err)
+async fn history_query_count(state: State<'_, AppState>, query: String) -> CmdResult<u64> {
+    off_main(&state, move |e| e.history_query_count(&query).map_err(err)).await
 }
 
 #[tauri::command]
-fn history_get(state: State<AppState>, id: u64) -> CmdResult<Option<TransactionView>> {
-    state.engine.history_get(id).map_err(err)
+async fn history_get(state: State<'_, AppState>, id: u64) -> CmdResult<Option<TransactionView>> {
+    off_main(&state, move |e| e.history_get(id).map_err(err)).await
 }
 
 #[tauri::command]
-fn history_clear(state: State<AppState>) -> CmdResult<()> {
-    state.engine.clear_history().map_err(err)
+async fn history_clear(state: State<'_, AppState>) -> CmdResult<()> {
+    off_main(&state, |e| e.clear_history().map_err(err)).await
 }
 
 #[tauri::command]
-fn site_map(state: State<AppState>) -> CmdResult<Vec<SiteNode>> {
-    state.engine.site_map().map_err(err)
+async fn site_map(state: State<'_, AppState>) -> CmdResult<Vec<SiteNode>> {
+    off_main(&state, |e| e.site_map().map_err(err)).await
 }
 
 // ---- crawler ----
@@ -326,16 +387,19 @@ fn crawler_stop(state: State<AppState>) -> CmdResult<()> {
 // ---- active scanner ----
 
 #[tauri::command]
-fn active_scan_start(state: State<AppState>, app: AppHandle, transaction_id: u64) -> CmdResult<()> {
-    let app2 = app.clone();
+async fn active_scan_start(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    transaction_id: u64,
+) -> CmdResult<()> {
     let sink: std::sync::Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> =
         std::sync::Arc::new(move |ev| {
-            let _ = app2.emit("scan-progress", ev);
+            let _ = app.emit("scan-progress", ev);
         });
-    state
-        .engine
-        .active_scan_start(transaction_id, sink)
-        .map_err(err)
+    off_main(&state, move |e| {
+        e.active_scan_start(transaction_id, sink).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -345,83 +409,89 @@ fn active_scan_stop(state: State<AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-fn traffic_stats(state: State<AppState>) -> CmdResult<TrafficStats> {
-    state.engine.traffic_stats().map_err(err)
+async fn traffic_stats(state: State<'_, AppState>) -> CmdResult<TrafficStats> {
+    off_main(&state, |e| e.traffic_stats().map_err(err)).await
 }
 
 // ---- findings & annotations ----
 
 #[tauri::command]
-fn findings_list(state: State<AppState>) -> CmdResult<Vec<Finding>> {
-    state.engine.findings_list().map_err(err)
+async fn findings_list(state: State<'_, AppState>) -> CmdResult<Vec<Finding>> {
+    off_main(&state, |e| e.findings_list().map_err(err)).await
 }
 
 #[tauri::command]
-fn finding_create(state: State<AppState>, finding: NewFinding) -> CmdResult<Finding> {
-    state.engine.finding_create(finding).map_err(err)
+async fn finding_create(state: State<'_, AppState>, finding: NewFinding) -> CmdResult<Finding> {
+    off_main(&state, move |e| e.finding_create(finding).map_err(err)).await
 }
 
 #[tauri::command]
-fn finding_update(
-    state: State<AppState>,
+async fn finding_update(
+    state: State<'_, AppState>,
     id: u64,
     update: FindingUpdate,
 ) -> CmdResult<Option<Finding>> {
-    state.engine.finding_update(id, update).map_err(err)
+    off_main(&state, move |e| e.finding_update(id, update).map_err(err)).await
 }
 
 #[tauri::command]
-fn finding_delete(state: State<AppState>, id: u64) -> CmdResult<bool> {
-    state.engine.finding_delete(id).map_err(err)
+async fn finding_delete(state: State<'_, AppState>, id: u64) -> CmdResult<bool> {
+    off_main(&state, move |e| e.finding_delete(id).map_err(err)).await
 }
 
 #[tauri::command]
-fn annotations(state: State<AppState>) -> CmdResult<Vec<Annotation>> {
-    state.engine.annotations().map_err(err)
+async fn annotations(state: State<'_, AppState>) -> CmdResult<Vec<Annotation>> {
+    off_main(&state, |e| e.annotations().map_err(err)).await
 }
 
 #[tauri::command]
-fn annotation_set(
-    state: State<AppState>,
+async fn annotation_set(
+    state: State<'_, AppState>,
     transaction_id: u64,
     color: Option<String>,
     note: Option<String>,
 ) -> CmdResult<()> {
-    state
-        .engine
-        .annotation_set(transaction_id, color, note)
-        .map_err(err)
+    off_main(&state, move |e| {
+        e.annotation_set(transaction_id, color, note).map_err(err)
+    })
+    .await
 }
 
 /// Render the findings report; `format` is `"json"` or `"html"`.
 #[tauri::command]
-fn findings_report(state: State<AppState>, format: String) -> CmdResult<String> {
-    state.engine.findings_report(&format).map_err(err)
+async fn findings_report(state: State<'_, AppState>, format: String) -> CmdResult<String> {
+    off_main(&state, move |e| e.findings_report(&format).map_err(err)).await
 }
 
 // ---- project lifecycle ----
 
 #[tauri::command]
-fn project_info(state: State<AppState>) -> CmdResult<ProjectMeta> {
-    state.engine.project_info().map_err(err)
+async fn project_info(state: State<'_, AppState>) -> CmdResult<ProjectMeta> {
+    off_main(&state, |e| e.project_info().map_err(err)).await
 }
 
 #[tauri::command]
-fn project_set_name(state: State<AppState>, name: String) -> CmdResult<ProjectMeta> {
-    state.engine.set_project_name(&name).map_err(err)?;
-    state.engine.project_info().map_err(err)
+async fn project_set_name(state: State<'_, AppState>, name: String) -> CmdResult<ProjectMeta> {
+    off_main(&state, move |e| {
+        e.set_project_name(&name).map_err(err)?;
+        e.project_info().map_err(err)
+    })
+    .await
 }
 
 /// Save a consistent copy of the project to `path` (save-a-copy / backup).
 #[tauri::command]
-fn project_backup(state: State<AppState>, path: String) -> CmdResult<String> {
-    state.engine.backup_project(&path).map_err(err)?;
-    Ok(path)
+async fn project_backup(state: State<'_, AppState>, path: String) -> CmdResult<String> {
+    off_main(&state, move |e| {
+        e.backup_project(&path).map_err(err)?;
+        Ok(path)
+    })
+    .await
 }
 
 #[tauri::command]
-fn project_integrity(state: State<AppState>) -> CmdResult<bool> {
-    state.engine.project_integrity().map_err(err)
+async fn project_integrity(state: State<'_, AppState>) -> CmdResult<bool> {
+    off_main(&state, |e| e.project_integrity().map_err(err)).await
 }
 
 /// Tool the UI should open on launch, from `SHRIKE_START_TOOL` (automation /
@@ -444,13 +514,13 @@ async fn import_traffic(state: State<'_, AppState>, path: String) -> CmdResult<u
 }
 
 #[tauri::command]
-fn ui_state_get(state: State<AppState>, key: String) -> CmdResult<Option<String>> {
-    state.engine.ui_state_get(&key).map_err(err)
+async fn ui_state_get(state: State<'_, AppState>, key: String) -> CmdResult<Option<String>> {
+    off_main(&state, move |e| e.ui_state_get(&key).map_err(err)).await
 }
 
 #[tauri::command]
-fn ui_state_set(state: State<AppState>, key: String, value: String) -> CmdResult<()> {
-    state.engine.ui_state_set(&key, &value).map_err(err)
+async fn ui_state_set(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
+    off_main(&state, move |e| e.ui_state_set(&key, &value).map_err(err)).await
 }
 
 #[tauri::command]
@@ -541,8 +611,9 @@ fn intercept_resolve(
 // ---- repeater ----
 
 #[tauri::command]
-fn repeater_send(state: State<AppState>, spec: RequestSpec) -> CmdResult<SendResult> {
-    state.engine.repeater_send(spec).map_err(err)
+async fn repeater_send(state: State<'_, AppState>, spec: RequestSpec) -> CmdResult<SendResult> {
+    // A send can wait up to the request timeout; never on the UI thread.
+    off_main(&state, move |e| e.repeater_send(spec).map_err(err)).await
 }
 
 // ---- intruder ----
@@ -589,14 +660,15 @@ fn decode_chain(input: String, ops: Vec<DecodeOp>) -> Vec<StepResult> {
 // ---- comparer ----
 
 #[tauri::command]
-fn compare(a: String, b: String, mode: DiffMode) -> Vec<Seg> {
+// Async commands run off the main thread; a large diff is CPU-heavy.
+async fn compare(a: String, b: String, mode: DiffMode) -> Vec<Seg> {
     shrike_engine::tools::comparer::compare(&a, &b, mode)
 }
 
 // ---- sequencer ----
 
 #[tauri::command]
-fn sequencer_analyze(tokens: Vec<String>) -> SequencerReport {
+async fn sequencer_analyze(tokens: Vec<String>) -> SequencerReport {
     shrike_engine::tools::sequencer::analyze(&tokens)
 }
 
@@ -787,13 +859,16 @@ async fn bapp_install_entry(
 }
 
 #[tauri::command]
-fn bapp_installed(state: State<AppState>) -> CmdResult<Vec<InstalledBapp>> {
-    state.engine.bapp_installed().map_err(err)
+async fn bapp_installed(state: State<'_, AppState>) -> CmdResult<Vec<InstalledBapp>> {
+    off_main(&state, |e| e.bapp_installed().map_err(err)).await
 }
 
 #[tauri::command]
-fn bapp_uninstall(state: State<AppState>, sha256: String) -> CmdResult<Vec<InstalledBapp>> {
-    state.engine.bapp_uninstall(&sha256).map_err(err)
+async fn bapp_uninstall(
+    state: State<'_, AppState>,
+    sha256: String,
+) -> CmdResult<Vec<InstalledBapp>> {
+    off_main(&state, move |e| e.bapp_uninstall(&sha256).map_err(err)).await
 }
 
 #[tauri::command]
@@ -819,9 +894,13 @@ async fn bapp_run(
 }
 
 #[tauri::command]
-fn bapp_stop(state: State<AppState>, sha256: String) -> CmdResult<Vec<String>> {
-    state.engine.bapp_stop(&sha256).map_err(err)?;
-    Ok(state.engine.bapp_running())
+async fn bapp_stop(state: State<'_, AppState>, sha256: String) -> CmdResult<Vec<String>> {
+    // Kills and reaps the host process.
+    off_main(&state, move |e| {
+        e.bapp_stop(&sha256).map_err(err)?;
+        Ok(e.bapp_running())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -900,14 +979,13 @@ fn resolve_bundled_chromium(app: &AppHandle) -> Option<std::path::PathBuf> {
 }
 
 #[tauri::command]
-fn launch_browser(
-    state: State<AppState>,
+async fn launch_browser(
+    state: State<'_, AppState>,
     app: AppHandle,
 ) -> CmdResult<shrike_engine::browser::BrowserStatus> {
-    state
-        .engine
-        .launch_browser(resolve_bundled_chromium(&app))
-        .map_err(err)
+    // May start the proxy first, then spawns Chromium.
+    let bin = resolve_bundled_chromium(&app);
+    off_main(&state, move |e| e.launch_browser(bin).map_err(err)).await
 }
 
 #[tauri::command]
@@ -1026,7 +1104,14 @@ pub fn run() {
         .setup(move |app| {
             // Register the live-traffic bridge now that we have an AppHandle.
             let handle = app.handle().clone();
-            engine_for_setup.add_sink(Box::new(TauriSink { app: handle }));
+            let batch = TrafficBatch::default();
+            spawn_traffic_flusher(handle.clone(), batch.clone());
+            engine_for_setup.add_sink(Box::new(TauriSink { app: handle, batch }));
+            // Clear the "browser launched" banner when the integrated browser closes.
+            let handle_browser = app.handle().clone();
+            engine_for_setup.set_browser_exit_hook(move || {
+                let _ = handle_browser.emit("browser-closed", ());
+            });
             // Resolve the bundled JVM host jars so Java BApps can be run.
             engine_for_setup.set_jvm_resources(resolve_jvm_resources(app.handle()));
             // Automation/screenshots: with SHRIKE_START_TOOL set, bring the proxy up

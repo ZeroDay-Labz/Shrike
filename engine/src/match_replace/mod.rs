@@ -116,6 +116,11 @@ impl MatchReplace {
         self.rules.iter().any(|c| c.rule.enabled)
     }
 
+    /// Whether any enabled rule targets `part`.
+    pub fn has_active_for(&self, part: RulePart) -> bool {
+        self.active(part).next().is_some()
+    }
+
     fn active(&self, part: RulePart) -> impl Iterator<Item = &Compiled> {
         self.rules
             .iter()

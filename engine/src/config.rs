@@ -31,6 +31,12 @@ pub struct ProxyConfig {
     /// refused at the proxy with 403 instead of being forwarded. Off by default
     /// so ordinary browsing records everything; automated tools always honour scope.
     pub drop_out_of_scope: bool,
+    /// When set, out-of-scope requests are still forwarded (the proxy stays a
+    /// working global proxy) but are **not** recorded — so an engagement captures
+    /// only the target's traffic while everything else browses normally. Ignored
+    /// when `drop_out_of_scope` is on (dropping already excludes them). Needs a
+    /// non-empty scope to mean anything.
+    pub capture_in_scope_only: bool,
     /// Optional path to a Chromium/Chrome binary for the integrated browser.
     /// `None` uses the bundled Chromium (resolved by the GUI) or a system one.
     pub chromium_path: Option<String>,
@@ -98,6 +104,7 @@ impl Default for ProxyConfig {
             max_capture_bytes: 10 * 1024 * 1024,
             passthrough_hosts: Vec::new(),
             drop_out_of_scope: false,
+            capture_in_scope_only: false,
             chromium_path: None,
             github_token: String::new(),
             intruder_require_scope: true,

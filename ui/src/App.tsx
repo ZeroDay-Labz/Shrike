@@ -3,7 +3,7 @@ import { api, events } from "./api";
 import type {
   CaInfo, ConfigView, HistoryFilter, ProxyStatus, TransactionSummary, TransactionView, WsMessage,
 } from "./types";
-import { HistoryTable } from "./components/HistoryTable";
+import { HistoryTable, type RowAction } from "./components/HistoryTable";
 import { WsTable } from "./components/WsTable";
 import { MessageViewer } from "./components/MessageViewer";
 import { TopBar } from "./components/TopBar";
@@ -24,6 +24,7 @@ import { ExtensionTab } from "./components/ExtensionTab";
 import { Jwt } from "./components/Jwt";
 import { Findings } from "./components/Findings";
 import { Icon } from "./components/Icon";
+import { ConfirmHost, ToastHost, confirmAction, toast } from "./components/Overlay";
 import type { BappOutput, InstalledBapp, RunningBapp } from "./types";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { getTheme, setTheme, type Theme } from "./theme";
@@ -134,9 +135,16 @@ export default function App() {
       });
       if (o.stream === "meta") refreshExtMeta();
     });
-    const poll = setInterval(refreshExtMeta, 3000);
-    return () => { un.then((f) => f()); clearInterval(poll); };
+    return () => { un.then((f) => f()); };
   }, [refreshExtMeta]);
+  // Watch for add-on hosts exiting — but only while one is running, so an idle
+  // app makes no background calls.
+  const anyExtRunning = extMeta.length > 0;
+  useEffect(() => {
+    if (!anyExtRunning) return;
+    const poll = setInterval(refreshExtMeta, 3000);
+    return () => clearInterval(poll);
+  }, [anyExtRunning, refreshExtMeta]);
 
   // Active-scan progress toast (findings themselves stream into the Findings tab).
   useEffect(() => {
@@ -203,14 +211,19 @@ export default function App() {
       await reload();
     })();
     const uns: Array<Promise<() => void>> = [
-      events.onCompleted((t) => {
+      // Live traffic arrives in batches (oldest first), so a burst costs one
+      // state update and one render rather than one per request.
+      events.onTrafficBatch((batch) => {
         if (queryRef.current.trim()) {
           // In query mode, re-run the query (debounced) so matches stay correct.
           if (queryReloadTimer.current) clearTimeout(queryReloadTimer.current);
           queryReloadTimer.current = setTimeout(() => { reload(); }, 600);
-        } else if (matches(t, filterRef.current)) {
-          setRows((prev) => [t, ...prev.filter((r) => r.id !== t.id)].slice(0, MAX_ROWS));
+          return;
         }
+        const fresh = batch.filter((t) => matches(t, filterRef.current)).reverse();
+        if (fresh.length === 0) return;
+        const ids = new Set(fresh.map((t) => t.id));
+        setRows((prev) => [...fresh, ...prev.filter((r) => !ids.has(r.id))].slice(0, MAX_ROWS));
       }),
       events.onWs((w) => setWsRows((prev) => [w, ...prev].slice(0, 2000))),
       events.onIntercept((item) => setHeld((prev) => [...prev, item])),
@@ -378,7 +391,23 @@ export default function App() {
   }, []);
 
   const clearHistory = useCallback(async () => {
-    await api.historyClear(); setRows([]); setWsRows([]); setSelId(undefined); setDetail(undefined);
+    const ok = await confirmAction({
+      title: "Clear all captured history?",
+      body: "Every recorded request, response and WebSocket message in this project is deleted. Findings and annotations are kept. This can't be undone — save a copy of the project first if you may need it.",
+      confirmLabel: "Clear history",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.historyClear();
+      setRows([]); setWsRows([]); setSelId(undefined); setDetail(undefined);
+      toast("History cleared", "success");
+    } catch (e) { toast(String(e), "error"); }
+  }, []);
+
+  const copy = useCallback(async (text: string, what: string) => {
+    try { await copyText(text); toast(`Copied ${what}`, "success"); }
+    catch (e) { toast(String(e), "error"); }
   }, []);
 
   // ⌘K / Ctrl-K opens the command palette.
@@ -398,12 +427,24 @@ export default function App() {
     const getView = () => api.historyGet(row.id);
     const items: MenuItem[] = [
       ...sendItems(getView),
-      { label: "Copy URL", separatorBefore: true, onClick: () => copyText(row.url) },
-      { label: "Copy as curl", onClick: async () => { const v = await getView(); if (v) copyText(toCurl(v.request)); } },
+      { label: "Copy URL", separatorBefore: true, onClick: () => copy(row.url, "URL") },
+      { label: "Copy as curl", onClick: async () => { const v = await getView(); if (v) copy(toCurl(v.request), "curl command"); } },
       { label: `Add host to scope (${row.host})`, separatorBefore: true, onClick: () => addHostToScope(row.host) },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
-  }, [sendItems, addHostToScope]);
+  }, [sendItems, addHostToScope, copy]);
+
+  // Keyboard actions from the history table (Enter / Ctrl+R, Ctrl+I, menu key).
+  const onRowAction = useCallback(async (action: RowAction, row: TransactionSummary, at: { x: number; y: number }) => {
+    if (action === "menu") {
+      openRowMenu({ preventDefault() {}, clientX: at.x, clientY: at.y } as React.MouseEvent, row);
+      return;
+    }
+    const v = await api.historyGet(row.id);
+    if (!v) return;
+    if (action === "repeater") addRepeaterFromView(v);
+    else addToIntruder(v);
+  }, [openRowMenu, addRepeaterFromView, addToIntruder]);
 
   const openNodeMenu = useCallback((e: React.MouseEvent, node: SiteNode) => {
     e.preventDefault();
@@ -413,12 +454,12 @@ export default function App() {
     const getView = () => api.historyGet(node.id);
     const items: MenuItem[] = [
       ...sendItems(getView),
-      { label: "Copy URL", separatorBefore: true, onClick: () => copyText(origin + node.path) },
-      { label: "Copy as curl", onClick: async () => { const v = await getView(); if (v) copyText(toCurl(v.request)); } },
+      { label: "Copy URL", separatorBefore: true, onClick: () => copy(origin + node.path, "URL") },
+      { label: "Copy as curl", onClick: async () => { const v = await getView(); if (v) copy(toCurl(v.request), "curl command"); } },
       { label: `Add host to scope (${node.host})`, separatorBefore: true, onClick: () => addHostToScope(node.host) },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
-  }, [sendItems, addHostToScope]);
+  }, [sendItems, addHostToScope, copy]);
 
   const commands = useMemo<Command[]>(() => {
     const nav: Command[] = TOOLS.map((t) => ({
@@ -531,7 +572,8 @@ export default function App() {
         ) : (
           <SplitPane
             direction="vertical" storageKey="shrike.proxy.v" defaultSize={46}
-            first={<HistoryTable rows={rows} selectedId={selId} onSelect={setSelId} onContextMenu={openRowMenu} />}
+            first={<HistoryTable rows={rows} selectedId={selId} onSelect={setSelId}
+              onContextMenu={openRowMenu} onAction={onRowAction} />}
             second={detail ? (
               <div className="detail">
                 <div className="detailbar">
@@ -539,16 +581,25 @@ export default function App() {
                     <button className={proxyView === "request" ? "on" : ""} onClick={() => setProxyView("request")}>Request</button>
                     <button className={proxyView === "response" ? "on" : ""} onClick={() => setProxyView("response")} disabled={!detail.response}>Response</button>
                   </div>
-                  <span className="detail-url" title={detail.request.url}>{detail.request.method} {detail.request.url}</span>
+                  <span className="detail-url" title={detail.request.url}>
+                    <b>{detail.request.method}</b> {detail.request.url}
+                  </span>
                   <span className="spacer" />
-                  <button className="btn" onClick={() => addRepeaterFromView(detail)}>⤷ Repeater</button>
-                  <button className="btn" onClick={() => addToIntruder(detail)}>⤷ Intruder</button>
-                  <button className="btn" onClick={() => sendToComparer(detail, "a")} title="Send to Comparer A">⤷ Cmp A</button>
-                  <button className="btn" onClick={() => sendToComparer(detail, "b")} title="Send to Comparer B">⤷ Cmp B</button>
-                  <button className="btn" onClick={() => sendToDecoder(detail)}>⤷ Decoder</button>
-                  <button className="btn" onClick={() => addFindingFromView(detail)} title="Record as finding">⤷ Finding</button>
-                  <button className="btn" onClick={() => activeScan(detail.request.id)} title="Active-scan this request (scope-gated)">⤷ Scan</button>
-                  <button className="btn" onClick={() => copyText(toCurl(detail.request))}>curl</button>
+                  <button className="btn start" onClick={() => addRepeaterFromView(detail)}
+                    title="Send to Repeater (Enter or Ctrl+R in the table)">
+                    <Icon name="send" size={13} /> Repeater
+                  </button>
+                  <button className="btn" onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const getView = async () => detail;
+                    setMenu({ x: r.right - 230, y: r.bottom + 6, items: [
+                      ...sendItems(getView),
+                      { label: "Copy URL", separatorBefore: true, onClick: () => copy(detail.request.url, "URL") },
+                      { label: "Copy as curl", onClick: () => copy(toCurl(detail.request), "curl command") },
+                    ] });
+                  }} aria-haspopup="menu">
+                    Send to… <Icon name="chevron" size={13} />
+                  </button>
                 </div>
                 <div className="pane-fill">
                   {proxyView === "response" && detail.response
@@ -558,13 +609,22 @@ export default function App() {
                 {detail.error && <div className="errbar">upstream error: {detail.error}</div>}
               </div>
             ) : (
-              <div className="hint">select a request to inspect it</div>
+              <div className="empty-detail">
+                <Icon name="proxy" size={26} />
+                <div className="empty-title">Select a request to inspect it</div>
+                <div className="shortcuts">
+                  <span><span className="kbd">↑</span><span className="kbd">↓</span> move</span>
+                  <span><span className="kbd">Enter</span> send to Repeater</span>
+                  <span><span className="kbd">Ctrl</span><span className="kbd">I</span> send to Intruder</span>
+                  <span><span className="kbd">Shift</span><span className="kbd">F10</span> more actions</span>
+                </div>
+              </div>
             )}
           />
         )}
       </div>
     );
-  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, addFindingFromView, activeScan, showTransaction, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
+  }, [tool, status, config, filter, count, tab, wsRows, rows, selId, detail, proxyView, repTabs, activeRep, openRowMenu, openNodeMenu, onRowAction, sendItems, copy, sendRepeater, newRepeaterTab, addRepeaterFromView, addToIntruder, intruderSeed, held, resolveHeld, resolveAllHeld, comparerSeed, decoderSeed, sendToComparer, sendToDecoder, addFindingFromView, activeScan, showTransaction, extMeta, extLogs, installedBapps, runExt, stopExt, uninstallExt, refreshExtMeta, reload]);
 
   return (
     <div className="app">
@@ -642,6 +702,8 @@ export default function App() {
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {scanStatus && <div className="scan-toast" onClick={() => setScanStatus("")}>{scanStatus}</div>}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      <ConfirmHost />
+      <ToastHost />
     </div>
   );
 }
@@ -693,7 +755,8 @@ function FilterBar(props: {
           </select>
           <label className="chk">
             <input type="checkbox" checked={!!filter.only_errors}
-              onChange={(e) => setFilter({ ...filter, only_errors: e.target.checked || null })} /> errors
+              onChange={(e) => setFilter({ ...filter, only_errors: e.target.checked || null })} />
+            errors only
           </label>
               </>
           }

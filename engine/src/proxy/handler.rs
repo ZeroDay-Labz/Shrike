@@ -10,24 +10,28 @@ use crate::{
     config::ProxyConfig,
     core::{
         CapturedRequest, CapturedResponse, EventBus, Header, HttpService, TrafficEvent,
-        Transaction, WsDirection, WsMessageEvent,
+        Transaction, TransactionIds, WsDirection, WsMessageEvent,
     },
     intercept::{Decision, EditedRequest, Interceptor},
     match_replace::{MatchReplace, RulePart},
     scope::Scope,
 };
 use bytes::Bytes;
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, combinators::BoxBody};
 use hudsucker::{
     Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketContext, WebSocketHandler,
     tokio_tungstenite::tungstenite::Message,
 };
-use hyper::{Method, Request, Response, StatusCode, Uri, header};
+use hyper::{
+    Method, Request, Response, StatusCode, Uri,
+    body::{Body as HttpBody, Frame, SizeHint},
+    header,
+};
 use std::{
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    collections::VecDeque,
+    pin::Pin,
+    sync::{Arc, RwLock},
+    task::{Context, Poll},
     time::Instant,
 };
 use tracing::{debug, warn};
@@ -45,7 +49,9 @@ struct Shared {
     interceptor: Arc<Interceptor>,
     /// Shared with the engine so match & replace edits apply live.
     match_replace: Arc<RwLock<MatchReplace>>,
-    next_id: AtomicU64,
+    /// The project-wide id sequence (shared with the store), so a proxy
+    /// restart continues numbering instead of reusing stored ids.
+    ids: TransactionIds,
 }
 
 struct Pending {
@@ -67,6 +73,7 @@ impl TrafficHandler {
         scope: Arc<RwLock<Scope>>,
         interceptor: Arc<Interceptor>,
         match_replace: Arc<RwLock<MatchReplace>>,
+        ids: TransactionIds,
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -76,7 +83,7 @@ impl TrafficHandler {
                 scope,
                 interceptor,
                 match_replace,
-                next_id: AtomicU64::new(1),
+                ids,
             }),
             pending: None,
         }
@@ -143,42 +150,147 @@ fn is_event_stream(headers: &header::HeaderMap) -> bool {
 }
 
 /// Hard ceiling on how much of a body without a declared `Content-Length` the
-/// proxy will buffer in memory. Responses with a declared length over the capture
-/// cap already stream through untouched; this bounds the chunked / no-length case
-/// so a single response can't consume unbounded memory. (A zero-copy tee that
-/// forwards past the ceiling while retaining only the head is the remaining step.)
+/// proxy will buffer in memory. Bodies with a declared length over the capture
+/// cap already stream through untouched before reaching [`buffer_body`]. A
+/// chunked / unknown-length body that grows past this ceiling stops being
+/// buffered and is streamed on in full (see [`Forward::Streaming`]), so memory
+/// stays bounded and the peer still receives every byte.
 const PROXY_BUFFER_CEILING: usize = 64 * 1024 * 1024;
 
-/// Buffer a body a frame at a time, bounding peak memory to `PROXY_BUFFER_CEILING`.
-/// Returns the bytes to forward plus (retained copy up to `max`, wire length,
-/// complete). `complete` is false when the record was truncated — either beyond
-/// the capture cap, or because the body exceeded the buffering ceiling.
-async fn buffer_body(mut body: Body, max: usize) -> Result<(Bytes, Bytes, usize, bool), String> {
+/// The body to send on, as [`buffer_body`] left it.
+///
+/// Three views of a body exist and must not be confused:
+/// - what is **forwarded**: always the complete original body (or the result of
+///   an explicit edit / match & replace on a complete body);
+/// - what is **retained** for history and the UI: at most the capture cap,
+///   flagged incomplete when shorter than the wire body;
+/// - what body-processing features see: the full bytes only for
+///   [`Forward::Complete`]; a streamed body is never rewritten.
+enum Forward {
+    /// The whole body fit under the buffering ceiling; these are its exact bytes.
+    Complete(Bytes),
+    /// The body outgrew the ceiling: the bytes already read, chained in front of
+    /// the untouched remainder of the stream, forwarded byte for byte.
+    Streaming(Body),
+}
+
+impl Forward {
+    fn into_body(self) -> Body {
+        match self {
+            Forward::Complete(bytes) => Body::from(bytes),
+            Forward::Streaming(body) => body,
+        }
+    }
+}
+
+/// Result of [`buffer_body`]: what to forward plus what to record.
+struct Buffered {
+    forward: Forward,
+    /// Retained copy for the record, at most the capture cap.
+    retained: Bytes,
+    /// Body length on the wire. For a streamed body, the bytes read before
+    /// streaming began (a lower bound: the full length is not known up front).
+    len: usize,
+    /// True only when `retained` is the entire body.
+    complete: bool,
+}
+
+/// The record's copy of `body`: the whole thing when it fits under `max`, else
+/// an owned copy of the first `max` bytes (so the record never pins a much
+/// larger forwarding buffer in memory). Returns the bytes and whether they are
+/// the complete body.
+fn retain(body: &Bytes, max: usize) -> (Bytes, bool) {
+    if body.len() > max {
+        (Bytes::copy_from_slice(&body[..max]), false)
+    } else {
+        (body.clone(), true)
+    }
+}
+
+/// Buffer a body a frame at a time, up to `PROXY_BUFFER_CEILING` (or the capture
+/// cap, if larger). A body that fits is returned whole; one that would exceed
+/// the ceiling is handed back as a stream of the buffered bytes followed by the
+/// rest, so it is forwarded intact without unbounded buffering.
+async fn buffer_body(mut body: Body, max: usize) -> Result<Buffered, String> {
     let ceiling = max.max(PROXY_BUFFER_CEILING);
     let mut buf: Vec<u8> = Vec::new();
-    let mut hit_ceiling = false;
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|e| e.to_string())?;
         let Some(data) = frame.data_ref() else {
             continue;
         };
         if buf.len() + data.len() > ceiling {
-            let take = ceiling - buf.len();
-            buf.extend_from_slice(&data[..take]);
-            hit_ceiling = true;
-            break;
+            // Keep the crossing frame separate rather than growing `buf` past the
+            // ceiling (which would reallocate to double its size).
+            let len = buf.len() + data.len();
+            // The record keeps an owned copy of the first `max` bytes.
+            let mut kept = Vec::with_capacity(max.min(len));
+            kept.extend_from_slice(&buf[..buf.len().min(max)]);
+            let room = max - kept.len();
+            kept.extend_from_slice(&data[..room.min(data.len())]);
+            let retained = Bytes::from(kept);
+            let head = Bytes::from(buf);
+            let crossing = frame.into_data().unwrap_or_default();
+            let forward = Body::from(BoxBody::new(PrefixedBody {
+                prefix: VecDeque::from([head, crossing]),
+                rest: body,
+            }));
+            return Ok(Buffered {
+                forward: Forward::Streaming(forward),
+                retained,
+                len,
+                complete: false,
+            });
         }
         buf.extend_from_slice(data);
     }
-    let forward = Bytes::from(buf);
-    let len = forward.len();
-    let retained = if len > max {
-        forward.slice(..max)
-    } else {
-        forward.clone()
-    };
-    let complete = len <= max && !hit_ceiling;
-    Ok((forward, retained, len, complete))
+    let bytes = Bytes::from(buf);
+    let (retained, complete) = retain(&bytes, max);
+    Ok(Buffered {
+        len: bytes.len(),
+        forward: Forward::Complete(bytes),
+        retained,
+        complete,
+    })
+}
+
+/// Already-read chunks replayed ahead of the rest of a body stream.
+struct PrefixedBody {
+    prefix: VecDeque<Bytes>,
+    rest: Body,
+}
+
+impl HttpBody for PrefixedBody {
+    type Data = Bytes;
+    type Error = <Body as HttpBody>::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        while let Some(chunk) = this.prefix.pop_front() {
+            if !chunk.is_empty() {
+                return Poll::Ready(Some(Ok(Frame::data(chunk))));
+            }
+        }
+        Pin::new(&mut this.rest).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.prefix.iter().all(Bytes::is_empty) && self.rest.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        let buffered: u64 = self.prefix.iter().map(|b| b.len() as u64).sum();
+        let rest = self.rest.size_hint();
+        let mut hint = SizeHint::new();
+        hint.set_lower(rest.lower() + buffered);
+        if let Some(upper) = rest.upper() {
+            hint.set_upper(upper + buffered);
+        }
+        hint
+    }
 }
 
 /// Rebuild `parts` in place from a user's intercept edit, keeping the original
@@ -189,6 +301,45 @@ fn apply_edit(
     parts: &mut hyper::http::request::Parts,
     edit: &EditedRequest,
 ) -> Result<Bytes, String> {
+    let mut map = apply_edit_head(parts, edit)?;
+    let body = Bytes::from(edit.body.clone().into_bytes());
+    if !body.is_empty() {
+        let len = header::HeaderValue::from_str(&body.len().to_string()).expect("numeric length");
+        map.insert(header::CONTENT_LENGTH, len);
+    }
+    parts.headers = map;
+    Ok(body)
+}
+
+/// Apply only the head of a user's intercept edit (method, target, headers),
+/// keeping the original body and therefore its original framing headers.
+fn apply_head_edit(
+    parts: &mut hyper::http::request::Parts,
+    edit: &EditedRequest,
+) -> Result<(), String> {
+    let mut map = apply_edit_head(parts, edit)?;
+    copy_framing_headers(&parts.headers, &mut map);
+    parts.headers = map;
+    Ok(())
+}
+
+/// Copy `Content-Length` / `Transfer-Encoding` from `from` into `to`: a body
+/// forwarded unchanged must keep the framing it arrived with.
+fn copy_framing_headers(from: &header::HeaderMap, to: &mut header::HeaderMap) {
+    for name in [header::CONTENT_LENGTH, header::TRANSFER_ENCODING] {
+        to.remove(&name);
+        for v in from.get_all(&name) {
+            to.append(name.clone(), v.clone());
+        }
+    }
+}
+
+/// Set the method and target from an edit and return its headers (without
+/// framing headers, which depend on which body is forwarded).
+fn apply_edit_head(
+    parts: &mut hyper::http::request::Parts,
+    edit: &EditedRequest,
+) -> Result<header::HeaderMap, String> {
     use std::str::FromStr;
 
     parts.method = Method::from_str(edit.method.trim())
@@ -212,8 +363,6 @@ fn apply_edit(
     parts.uri =
         Uri::from_str(&uri_str).map_err(|e| format!("invalid target {:?}: {e}", edit.target))?;
 
-    let body = Bytes::from(edit.body.clone().into_bytes());
-
     let mut map = header::HeaderMap::new();
     for h in &edit.headers {
         // These are managed for us; a user-typed value would be ignored or wrong.
@@ -228,12 +377,15 @@ fn apply_edit(
             .map_err(|e| format!("invalid value for header {:?}: {e}", h.name))?;
         map.append(name, value);
     }
-    if !body.is_empty() {
-        let len = header::HeaderValue::from_str(&body.len().to_string()).expect("numeric length");
-        map.insert(header::CONTENT_LENGTH, len);
-    }
-    parts.headers = map;
-    Ok(body)
+    Ok(map)
+}
+
+/// Whether the body text of an intercept edit differs from the body the user
+/// was shown. Line endings are compared loosely because editors may rewrite
+/// `\r\n` as `\n`.
+fn body_was_edited(edit: &EditedRequest, shown: &[u8]) -> bool {
+    let shown = String::from_utf8_lossy(shown);
+    edit.body.replace("\r\n", "\n") != shown.replace("\r\n", "\n")
 }
 
 fn headers_to_vec(map: &header::HeaderMap) -> Vec<Header> {
@@ -270,6 +422,20 @@ fn rebuild_header_map(headers: Vec<Header>, body_len: usize) -> header::HeaderMa
         map.insert(header::CONTENT_LENGTH, len);
     }
     map
+}
+
+/// Apply header rules to headers whose body is streamed on unchanged: framing
+/// headers keep their original values, since the body itself is not rewritten.
+fn apply_header_rules_keep_framing(
+    mr: &MatchReplace,
+    part: RulePart,
+    headers: &mut header::HeaderMap,
+) {
+    let mut list = headers_to_vec(headers);
+    mr.apply_headers(part, &mut list);
+    let mut map = rebuild_header_map(list, 0);
+    copy_framing_headers(headers, &mut map);
+    *headers = map;
 }
 
 /// Apply active request-side match & replace rules to `parts` + `body` in place,
@@ -330,7 +496,7 @@ impl HttpHandler for TrafficHandler {
         }
 
         let max = self.shared.config.max_capture_bytes;
-        let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = self.shared.ids.next();
         let (mut parts, body) = req.into_parts();
         strip_proxy_headers(&mut parts.headers);
         if strip_ws_compression(&mut parts.headers) {
@@ -359,6 +525,18 @@ impl HttpHandler for TrafficHandler {
                 .into();
         }
 
+        // Scope-capture mode: when the user is recording only the engagement
+        // target, out-of-scope requests still go through (so browsing works) but
+        // are neither buffered nor recorded. An empty scope records nothing, so
+        // treat that as "not filtering" to avoid capturing nothing at all.
+        if self.shared.config.capture_in_scope_only
+            && !self.shared.config.drop_out_of_scope
+            && !self.scope_is_empty()
+            && !self.target_in_scope(&parts.uri)
+        {
+            return Request::from_parts(parts, body).into();
+        }
+
         // Large uploads stream through untouched; we record the head only.
         if let Some(declared) = too_large_to_buffer(&parts.headers, max) {
             if let Some(captured) = CapturedRequest::from_parts(
@@ -374,7 +552,12 @@ impl HttpHandler for TrafficHandler {
             return Request::from_parts(parts, body).into();
         }
 
-        let (forward, retained, len, complete) = match buffer_body(body, max).await {
+        let Buffered {
+            forward,
+            retained,
+            len,
+            complete,
+        } = match buffer_body(body, max).await {
             Ok(v) => v,
             Err(err) => {
                 warn!(%err, "failed to read request body");
@@ -394,7 +577,7 @@ impl HttpHandler for TrafficHandler {
                 Some(captured) => captured,
                 None => {
                     debug!(uri = %parts.uri, "request without absolute URI; not recorded");
-                    return Request::from_parts(parts, Body::from(forward)).into();
+                    return Request::from_parts(parts, forward.into_body()).into();
                 }
             };
 
@@ -423,25 +606,55 @@ impl HttpHandler for TrafficHandler {
         }
 
         match buffer_body(body, max).await {
-            Ok((forward, retained, len, complete)) => {
+            Ok(Buffered {
+                forward,
+                retained,
+                len,
+                complete,
+            }) => {
                 let mr = self
                     .shared
                     .match_replace
                     .read()
                     .expect("match_replace lock");
-                if mr.has_active() {
-                    let mut parts = parts;
-                    let body = apply_match_replace_response(&mr, &mut parts, forward);
-                    drop(mr);
-                    let blen = body.len();
-                    let captured = CapturedResponse::from_parts(&parts, body.clone(), blen, true);
-                    self.complete(Some(captured), None);
-                    Response::from_parts(parts, Body::from(body))
-                } else {
-                    drop(mr);
-                    let captured = CapturedResponse::from_parts(&parts, retained, len, complete);
-                    self.complete(Some(captured), None);
-                    Response::from_parts(parts, Body::from(forward))
+                match forward {
+                    Forward::Complete(forward) if mr.has_active() => {
+                        let mut parts = parts;
+                        let body = apply_match_replace_response(&mr, &mut parts, forward);
+                        drop(mr);
+                        let (retained, complete) = retain(&body, max);
+                        let captured =
+                            CapturedResponse::from_parts(&parts, retained, body.len(), complete);
+                        self.complete(Some(captured), None);
+                        Response::from_parts(parts, Body::from(body))
+                    }
+                    Forward::Streaming(forward) if mr.has_active() => {
+                        // Too large to rewrite: header rules still apply, the body
+                        // is forwarded exactly as received.
+                        let mut parts = parts;
+                        if mr.has_active_for(RulePart::ResponseBody) {
+                            warn!(
+                                "response body exceeds the proxy buffer ceiling; body match & \
+                                 replace rules were not applied to it"
+                            );
+                        }
+                        apply_header_rules_keep_framing(
+                            &mr,
+                            RulePart::ResponseHeader,
+                            &mut parts.headers,
+                        );
+                        drop(mr);
+                        let captured = CapturedResponse::from_parts(&parts, retained, len, false);
+                        self.complete(Some(captured), None);
+                        Response::from_parts(parts, forward)
+                    }
+                    forward => {
+                        drop(mr);
+                        let captured =
+                            CapturedResponse::from_parts(&parts, retained, len, complete);
+                        self.complete(Some(captured), None);
+                        Response::from_parts(parts, forward.into_body())
+                    }
                 }
             }
             Err(err) => {
@@ -500,6 +713,10 @@ impl HttpHandler for TrafficHandler {
 
 impl TrafficHandler {
     /// Scope check for a request URI; unparsable targets count as out of scope.
+    fn scope_is_empty(&self) -> bool {
+        self.shared.scope.read().expect("scope lock").is_empty()
+    }
+
     fn target_in_scope(&self, uri: &hyper::Uri) -> bool {
         HttpService::from_uri(uri)
             .map(|svc| {
@@ -529,7 +746,7 @@ impl TrafficHandler {
         id: u64,
         ctx: &HttpContext,
         mut parts: hyper::http::request::Parts,
-        forward: Bytes,
+        forward: Forward,
         captured: CapturedRequest,
     ) -> RequestOrResponse {
         let raw = String::from_utf8_lossy(&captured.to_raw()).into_owned();
@@ -562,9 +779,46 @@ impl TrafficHandler {
             Decision::Forward(None) => {
                 self.forward_request(id, ctx.client_addr, parts, forward, captured)
             }
+            // The body shown for editing was decoded as text and may be only the
+            // first part of the body. Leave the body alone unless the user
+            // actually changed it, so the original bytes are forwarded exactly.
+            Decision::Forward(Some(edit)) if !body_was_edited(&edit, &captured.body) => {
+                if let Err(err) = apply_head_edit(&mut parts, &edit) {
+                    warn!(%err, "could not apply intercept edit; forwarding original");
+                }
+                self.forward_request(id, ctx.client_addr, parts, forward, captured)
+            }
+            // A body edit made on a partial copy would forward a truncated body.
+            Decision::Forward(Some(_)) if !captured.body_complete => {
+                warn!(
+                    "refused an intercept body edit: the body was too large to capture \
+                     completely, so the edited copy is incomplete"
+                );
+                self.remember(captured);
+                self.complete(
+                    None,
+                    Some("intercept edit refused: body too large to capture completely".into()),
+                );
+                Response::builder()
+                    .status(StatusCode::PAYLOAD_TOO_LARGE)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(Body::from(
+                        "shrike: this request's body was too large to capture completely, so \
+                         an edited body cannot be forwarded safely. Forward it without editing \
+                         the body, or drop it.\n",
+                    ))
+                    .expect("static response")
+                    .into()
+            }
             Decision::Forward(Some(edit)) => match apply_edit(&mut parts, &edit) {
                 // Match & replace runs on top of the user's edit (user edits win).
-                Ok(body) => self.forward_request(id, ctx.client_addr, parts, body, captured),
+                Ok(body) => self.forward_request(
+                    id,
+                    ctx.client_addr,
+                    parts,
+                    Forward::Complete(body),
+                    captured,
+                ),
                 Err(err) => {
                     warn!(%err, "could not apply intercept edit; forwarding original");
                     self.forward_request(id, ctx.client_addr, parts, forward, captured)
@@ -580,27 +834,67 @@ impl TrafficHandler {
         id: u64,
         client_addr: std::net::SocketAddr,
         mut parts: hyper::http::request::Parts,
-        forward: Bytes,
+        forward: Forward,
         captured: CapturedRequest,
     ) -> RequestOrResponse {
+        let max = self.shared.config.max_capture_bytes;
         let mr = self
             .shared
             .match_replace
             .read()
             .expect("match_replace lock");
-        if mr.has_active() {
-            let body = apply_match_replace_request(&mr, &mut parts, forward);
-            drop(mr);
-            let len = body.len();
-            match CapturedRequest::from_parts(id, client_addr, &parts, body.clone(), len, true) {
-                Some(c) => self.remember(c),
-                None => self.remember(captured),
+        let active = mr.has_active();
+        // The recorded request is always rebuilt from the FINAL parts and body —
+        // the ones actually sent — so history reflects intercept edits and match
+        // & replace exactly, never the pre-edit capture. `captured` is only a
+        // fallback for a request with no absolute URI (which is never recorded).
+        match forward {
+            Forward::Complete(mut body) => {
+                if active {
+                    body = apply_match_replace_request(&mr, &mut parts, body);
+                }
+                drop(mr);
+                let (retained, complete) = retain(&body, max);
+                let rec = CapturedRequest::from_parts(
+                    id,
+                    client_addr,
+                    &parts,
+                    retained,
+                    body.len(),
+                    complete,
+                );
+                self.remember(rec.unwrap_or(captured));
+                Request::from_parts(parts, Body::from(body)).into()
             }
-            Request::from_parts(parts, Body::from(body)).into()
-        } else {
-            drop(mr);
-            self.remember(captured);
-            Request::from_parts(parts, Body::from(forward)).into()
+            Forward::Streaming(body) => {
+                // Too large to rewrite: header rules still apply, the body is
+                // forwarded exactly as received (only the captured prefix is kept).
+                if active {
+                    if mr.has_active_for(RulePart::RequestBody) {
+                        warn!(
+                            uri = %parts.uri,
+                            "request body exceeds the proxy buffer ceiling; body match & replace \
+                             rules were not applied to it"
+                        );
+                    }
+                    apply_header_rules_keep_framing(
+                        &mr,
+                        RulePart::RequestHeader,
+                        &mut parts.headers,
+                    );
+                }
+                drop(mr);
+                let rec = CapturedRequest::from_parts(
+                    id,
+                    client_addr,
+                    &parts,
+                    captured.body.clone(),
+                    captured.body_len,
+                    false,
+                );
+                self.remember(rec.unwrap_or(captured));
+                Request::from_parts(parts, body).into()
+            }
         }
     }
 }
@@ -682,5 +976,197 @@ mod tests {
         let mut h = headers(&[("Content-Type", "application/json"), ("Accept", "*/*")]);
         assert!(!strip_ws_compression(&mut h));
         assert_eq!(h.len(), 2);
+    }
+
+    /// Deterministic payload byte at offset `i`. Covers every byte value, so a
+    /// body is never valid UTF-8 (e.g. 0xFF, lone continuation bytes).
+    fn pattern(i: usize) -> u8 {
+        (i.wrapping_mul(2_654_435_761) >> 13) as u8
+    }
+
+    /// A generated body of `len` bytes in `frame`-sized data frames, with no
+    /// size hint — like a chunked / unknown-length body off the wire.
+    struct PatternBody {
+        len: usize,
+        pos: usize,
+        frame: usize,
+    }
+
+    impl HttpBody for PatternBody {
+        type Data = Bytes;
+        type Error = <Body as HttpBody>::Error;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            let this = self.get_mut();
+            if this.pos >= this.len {
+                return Poll::Ready(None);
+            }
+            let end = (this.pos + this.frame).min(this.len);
+            let chunk: Vec<u8> = (this.pos..end).map(pattern).collect();
+            this.pos = end;
+            Poll::Ready(Some(Ok(Frame::data(Bytes::from(chunk)))))
+        }
+    }
+
+    fn pattern_body(len: usize) -> Body {
+        Body::from(BoxBody::new(PatternBody {
+            len,
+            pos: 0,
+            frame: 64 * 1024,
+        }))
+    }
+
+    /// Drain a body, checking every byte against the pattern; returns its length.
+    async fn verify_pattern(mut body: Body) -> usize {
+        let mut n = 0;
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame.unwrap().into_data() {
+                for (k, b) in data.iter().enumerate() {
+                    assert_eq!(*b, pattern(n + k), "byte {} differs", n + k);
+                }
+                n += data.len();
+            }
+        }
+        n
+    }
+
+    const MAX: usize = 10 * 1024 * 1024;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn pattern_is_not_utf8() {
+        let sample: Vec<u8> = (0..4096).map(pattern).collect();
+        assert!(std::str::from_utf8(&sample).is_err());
+    }
+
+    #[test]
+    fn small_body_is_buffered_whole_and_complete() {
+        rt().block_on(async {
+            let b = buffer_body(pattern_body(1000), MAX).await.unwrap();
+            assert!(b.complete);
+            assert_eq!(b.len, 1000);
+            assert_eq!(b.retained.len(), 1000);
+            let Forward::Complete(bytes) = b.forward else {
+                panic!("small body must be buffered whole")
+            };
+            assert_eq!(verify_pattern(Body::from(bytes)).await, 1000);
+        });
+    }
+
+    #[test]
+    fn body_at_or_just_below_the_ceiling_is_buffered_whole() {
+        for len in [PROXY_BUFFER_CEILING - 1, PROXY_BUFFER_CEILING] {
+            rt().block_on(async {
+                let b = buffer_body(pattern_body(len), MAX).await.unwrap();
+                assert_eq!(b.len, len);
+                assert!(!b.complete, "record is capped below the wire length");
+                assert_eq!(
+                    b.retained.len(),
+                    MAX,
+                    "record is bounded by the capture cap"
+                );
+                let Forward::Complete(bytes) = b.forward else {
+                    panic!("{len} bytes fit under the ceiling")
+                };
+                assert_eq!(bytes.len(), len);
+                assert_eq!(verify_pattern(Body::from(bytes)).await, len);
+            });
+        }
+    }
+
+    #[test]
+    fn body_just_above_the_ceiling_is_streamed_in_full_not_truncated() {
+        for len in [
+            PROXY_BUFFER_CEILING + 1,
+            PROXY_BUFFER_CEILING + 3 * 64 * 1024 + 7,
+        ] {
+            rt().block_on(async {
+                let b = buffer_body(pattern_body(len), MAX).await.unwrap();
+                assert!(!b.complete);
+                assert_eq!(b.retained.len(), MAX);
+                assert!(b.len > PROXY_BUFFER_CEILING && b.len <= len, "lower bound");
+                assert!(
+                    b.retained.iter().enumerate().all(|(i, x)| *x == pattern(i)),
+                    "the record holds the true first bytes"
+                );
+                let Forward::Streaming(body) = b.forward else {
+                    panic!("{len} bytes exceed the ceiling")
+                };
+                assert_eq!(verify_pattern(body).await, len, "every byte forwarded");
+            });
+        }
+    }
+
+    #[test]
+    fn capture_cap_above_the_ceiling_still_bounds_the_record() {
+        // A capture cap larger than the default ceiling raises the ceiling too.
+        let max = PROXY_BUFFER_CEILING + 1024;
+        rt().block_on(async {
+            let b = buffer_body(pattern_body(max + 1), max).await.unwrap();
+            assert_eq!(b.retained.len(), max);
+            assert!(!b.complete);
+            let Forward::Streaming(body) = b.forward else {
+                panic!("exceeds the raised ceiling")
+            };
+            assert_eq!(verify_pattern(body).await, max + 1);
+        });
+    }
+
+    #[test]
+    fn untouched_intercept_body_is_detected_despite_line_ending_rewrites() {
+        let edit = |body: &str| EditedRequest {
+            method: "POST".into(),
+            target: "/".into(),
+            headers: vec![],
+            body: body.into(),
+        };
+        assert!(!body_was_edited(&edit("a\nb"), b"a\r\nb"));
+        assert!(!body_was_edited(&edit("\u{fffd}x"), &[0xff, b'x']));
+        assert!(body_was_edited(&edit("a\nc"), b"a\r\nb"));
+    }
+
+    #[test]
+    fn head_edit_keeps_the_original_framing() {
+        let (mut parts, ()) = hyper::Request::builder()
+            .method("POST")
+            .uri("http://lab.test/up")
+            .header("transfer-encoding", "chunked")
+            .header("x-old", "1")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let edit = EditedRequest {
+            method: "PUT".into(),
+            target: "/up2".into(),
+            headers: vec![
+                Header {
+                    name: "X-New".into(),
+                    value: "2".into(),
+                },
+                Header {
+                    name: "Content-Length".into(),
+                    value: "5".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        apply_head_edit(&mut parts, &edit).unwrap();
+        assert_eq!(parts.method, Method::PUT);
+        assert_eq!(parts.uri.path(), "/up2");
+        assert_eq!(parts.headers.get("x-new").unwrap(), "2");
+        assert!(parts.headers.get("x-old").is_none());
+        assert_eq!(parts.headers.get("transfer-encoding").unwrap(), "chunked");
+        assert!(
+            parts.headers.get("content-length").is_none(),
+            "a typed Content-Length must not override the real framing"
+        );
     }
 }

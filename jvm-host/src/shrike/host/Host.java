@@ -86,7 +86,15 @@ public final class Host {
             Object callbacks = proxy(cbIface);
             Class<?> pi = Class.forName("org.python.util.PythonInterpreter");
             Object interp = pi.getConstructor().newInstance();
-            pi.getMethod("execfile", String.class).invoke(interp, pyPath);
+            // Multi-file extensions import their own modules (e.g. `from helpers.http
+            // import ...`), so the script's directory must be on sys.path, and some
+            // locate their resources through __file__.
+            String abs = new java.io.File(pyPath).getAbsolutePath();
+            String dir = new java.io.File(abs).getParent();
+            pi.getMethod("set", String.class, Object.class).invoke(interp, "__shrike_dir", dir == null ? "." : dir);
+            pi.getMethod("set", String.class, Object.class).invoke(interp, "__file__", abs);
+            pi.getMethod("exec", String.class).invoke(interp, "import sys\nsys.path.insert(0, __shrike_dir)");
+            pi.getMethod("execfile", String.class).invoke(interp, abs);
             pi.getMethod("set", String.class, Object.class).invoke(interp, "__shrike_cb", callbacks);
             pi.getMethod("exec", String.class)
                 .invoke(interp, "BurpExtender().registerExtenderCallbacks(__shrike_cb)");

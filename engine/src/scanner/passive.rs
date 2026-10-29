@@ -72,6 +72,15 @@ fn scan_one(txn: &Transaction, store: &Store, bus: &crate::core::EventBus) {
 }
 
 /// Run every passive check over a transaction.
+/// Current Unix time in whole seconds (for JWT expiry checks); 0 if the clock
+/// is before the epoch, which only makes the check more conservative.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub fn run_checks(txn: &Transaction) -> Vec<Hit> {
     let mut hits = Vec::new();
     let Some(resp) = txn.response.as_ref() else {
@@ -93,6 +102,7 @@ pub fn run_checks(txn: &Transaction) -> Vec<Hit> {
     hits.extend(reflected_input_hits(txn, &body, is_texty(ctype)));
     hits.extend(info_disclosure_hits(resp));
     hits.extend(error_signature_hits(&body));
+    hits.extend(crate::scanner::jwt_scan::jwt_hits(txn, now_unix_secs()));
     if secure && is_html {
         hits.extend(mixed_content_hits(&body));
     }
