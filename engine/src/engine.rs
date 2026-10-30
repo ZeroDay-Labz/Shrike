@@ -1802,12 +1802,24 @@ mod tests {
         let bus = engine.ingest_bus();
         bus.emit(TrafficEvent::Completed(Arc::new(make_txn(first))));
 
-        // The scanner runs on its own thread; poll briefly for the findings.
+        // The scanner runs on its own thread and files findings one at a time,
+        // so the count climbs for a bit. Poll until it settles (unchanged for a
+        // few consecutive reads) rather than snapshotting the first non-zero
+        // value — otherwise a slow runner captures a partial count while the
+        // remaining findings are still landing, and the dedup check below sees
+        // a larger total than it expected.
         let mut count = 0;
-        for _ in 0..50 {
-            count = engine.findings_list().unwrap().len();
-            if count > 0 {
-                break;
+        let mut stable = 0;
+        for _ in 0..100 {
+            let now = engine.findings_list().unwrap().len();
+            if now > 0 && now == count {
+                stable += 1;
+                if stable >= 3 {
+                    break;
+                }
+            } else {
+                stable = 0;
+                count = now;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
