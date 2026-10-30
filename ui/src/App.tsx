@@ -58,6 +58,11 @@ const TOOL_GROUPS = TOOLS.reduce<{ name: string; tools: Tool[] }[]>((acc, t) => 
 
 const MAX_ROWS = 5000;
 
+// Tools that hold their working state internally (unlike Repeater, whose state
+// is lifted to App). They are mounted once and merely hidden when inactive, so
+// switching tabs and coming back keeps their input, results and settings.
+const KEEPALIVE_TOOLS = ["intruder", "decoder", "comparer", "sequencer", "jwt"];
+
 function matches(s: TransactionSummary, f: HistoryFilter): boolean {
   if (f.host && !s.host.toLowerCase().includes(f.host.toLowerCase())) return false;
   if (f.method && s.method.toUpperCase() !== f.method.toUpperCase()) return false;
@@ -497,6 +502,12 @@ export default function App() {
   const count = rows.length;
 
   const main = useMemo(() => {
+    // These tools hold their working state internally and are kept mounted
+    // (rendered in the keep-alive block below), so `main` never renders them —
+    // returning them here too would mount a second, competing copy.
+    if (KEEPALIVE_TOOLS.includes(tool)) {
+      return null;
+    }
     if (tool === "settings") {
       return <Settings config={config} onSaved={setConfig} onImported={() => reload()} />;
     }
@@ -513,29 +524,14 @@ export default function App() {
         />
       );
     }
-    if (tool === "intruder") {
-      return <Intruder seed={intruderSeed} />;
-    }
-    if (tool === "decoder") {
-      return <Decoder seed={decoderSeed} />;
-    }
     if (tool === "target") {
       return <Target onContextMenu={openNodeMenu} />;
-    }
-    if (tool === "comparer") {
-      return <Comparer seed={comparerSeed} />;
     }
     if (tool === "logger") {
       return <Logger rows={rows} onContextMenu={openRowMenu} />;
     }
     if (tool === "dashboard") {
       return <Dashboard running={status.running} listen={status.listen} />;
-    }
-    if (tool === "sequencer") {
-      return <Sequencer />;
-    }
-    if (tool === "jwt") {
-      return <Jwt />;
     }
     if (tool === "findings") {
       return <Findings onShowTransaction={showTransaction} />;
@@ -714,7 +710,26 @@ export default function App() {
             <span className="rail-label">Collapse</span>
           </button>
         </nav>
-        <main className="content">{main}</main>
+        <main className="content">
+          {/* Keep-alive tools: mounted once, shown/hidden via display, so their
+              state survives tab switches. `main` is null for these tools. */}
+          <div className="keepalive" style={{ display: tool === "intruder" ? "contents" : "none" }}>
+            <Intruder seed={intruderSeed} />
+          </div>
+          <div className="keepalive" style={{ display: tool === "decoder" ? "contents" : "none" }}>
+            <Decoder seed={decoderSeed} />
+          </div>
+          <div className="keepalive" style={{ display: tool === "comparer" ? "contents" : "none" }}>
+            <Comparer seed={comparerSeed} />
+          </div>
+          <div className="keepalive" style={{ display: tool === "sequencer" ? "contents" : "none" }}>
+            <Sequencer />
+          </div>
+          <div className="keepalive" style={{ display: tool === "jwt" ? "contents" : "none" }}>
+            <Jwt />
+          </div>
+          {main}
+        </main>
       </div>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {scanStatus && <div className="scan-toast" onClick={() => setScanStatus("")}>{scanStatus}</div>}
