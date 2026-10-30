@@ -10,6 +10,9 @@ if [ -z "$MONTOYA" ]; then
 fi
 rm -rf "$HERE/build/host"
 mkdir -p "$HERE/build/host"
-javac -cp "$MONTOYA" -d "$HERE/build/host" "$HERE"/src/shrike/host/Host.java
+# Compile every host source, not just the entry point, so the Montoya object
+# model and the bridge compile in alongside Host.
+find "$HERE/src" -name '*.java' > "$HERE/build/sources.txt"
+javac -cp "$MONTOYA" -d "$HERE/build/host" @"$HERE/build/sources.txt"
 jar cfe "$HERE/build/shrike-host.jar" shrike.host.Host -C "$HERE/build/host" .
 echo "built $HERE/build/shrike-host.jar (against $(basename "$MONTOYA"))"
