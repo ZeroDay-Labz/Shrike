@@ -1,9 +1,21 @@
 package shrike.host;
 
+import burp.api.montoya.http.HttpService;
+import burp.api.montoya.http.handler.HttpHandler;
+import burp.api.montoya.http.handler.HttpRequestToBeSent;
+import burp.api.montoya.http.handler.HttpResponseReceived;
+import burp.api.montoya.http.handler.RequestToBeSentAction;
+import burp.api.montoya.http.handler.ResponseReceivedAction;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.lang.reflect.*;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -32,6 +44,10 @@ public final class Host {
     static int uiWindows = 0;
     /** "probe" = load, report, exit (never block); "run" = keep UI alive. */
     static boolean probe = true;
+    /** "serve" = load, then process traffic frames on stdin/stdout until EOF. */
+    static boolean serve = false;
+    /** HTTP handlers the extension registered, in registration order. */
+    static final List<HttpHandler> httpHandlers = new ArrayList<>();
     /** Our JSON/line channel to the Rust host (the real stdout). */
     static PrintStream out = System.out;
 
@@ -41,7 +57,9 @@ public final class Host {
             return;
         }
         String jarPath = args[0];
-        probe = args.length < 2 || !"run".equals(args[1]);
+        String mode = args.length >= 2 ? args[1] : "probe";
+        serve = "serve".equals(mode);
+        probe = !"run".equals(mode) && !serve;
         // Keep the extension's own stdout/stderr out of our JSON channel.
         PrintStream realOut = System.out;
         out = realOut;
@@ -61,11 +79,18 @@ public final class Host {
             Object api = proxy(montoyaApi);
 
             Method init = extClass.getMethod("initialize", montoyaApi);
+            // Install our object factory before initialize() so the extension's
+            // static constructors (HttpRequest.httpRequest(..), etc.) work.
+            MontoyaObjects.install();
             init.invoke(extension, api);
 
             realOut.println(json(true, null));
-            // In "run" mode keep the JVM alive so any UI window stays open.
-            if (!probe && uiWindows > 0) {
+            realOut.flush();
+            if (serve) {
+                // Process traffic until the Rust side closes stdin.
+                serveLoop(realOut);
+            } else if (!probe && uiWindows > 0) {
+                // In "run" mode keep the JVM alive so any UI window stays open.
                 Thread.currentThread().join();
             }
         } catch (Throwable t) {
@@ -164,6 +189,7 @@ public final class Host {
         }
         if (n.startsWith("register")) {
             registered.add(n);
+            captureHandler(args);
             if (n.equals("registerSuiteTab") && args != null && args.length >= 2
                     && args[1] instanceof java.awt.Component) {
                 showTab(args[0] == null ? "Extension" : args[0].toString(), (java.awt.Component) args[1]);
@@ -211,6 +237,119 @@ public final class Host {
         }
         return null;
     };
+
+    /** Record any traffic handler the extension registered. */
+    static void captureHandler(Object[] args) {
+        if (args == null) {
+            return;
+        }
+        for (Object a : args) {
+            if (a instanceof HttpHandler) {
+                httpHandlers.add((HttpHandler) a);
+            }
+        }
+    }
+
+    /**
+     * The traffic loop: read framed requests from stdin, run them through the
+     * registered handlers, write the (possibly modified) result back.
+     *
+     * Frame in:  {@code @REQ\t<id>\t<request|response>\t<host>\t<port>\t<secure>\t<base64 raw>}
+     * Frame out: {@code @RES\t<id>\t<continue|drop>\t<base64 raw>}
+     *
+     * Base64 keeps binary bodies intact; tabs never appear in the fields. The
+     * loop ends when Rust closes stdin, which ends the JVM.
+     */
+    static void serveLoop(PrintStream out) {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.ISO_8859_1));
+        try {
+            String line;
+            while ((line = in.readLine()) != null) {
+                if (!line.startsWith("@REQ\t")) {
+                    continue;
+                }
+                String[] f = line.split("\t", -1);
+                if (f.length < 7) {
+                    continue;
+                }
+                String id = f[1];
+                String phase = f[2];
+                HttpService svc = new MontoyaObjects.Svc(f[3], parseIntOr(f[4], 0),
+                        "1".equals(f[5]) || "true".equalsIgnoreCase(f[5]));
+                byte[] raw = Base64.getDecoder().decode(f[6]);
+                String[] r = "response".equals(phase) ? dispatchResponse(svc, raw) : dispatchRequest(svc, raw);
+                synchronized (out) {
+                    out.println("@RES\t" + id + "\t" + r[0] + "\t" + r[1]);
+                    out.flush();
+                }
+            }
+        } catch (Throwable t) {
+            // stdin closed or unreadable → stop serving, let the JVM exit.
+        }
+    }
+
+    /** Run a request through every HTTP handler in turn; returns {action, base64}. */
+    static String[] dispatchRequest(HttpService svc, byte[] raw) {
+        byte[] cur = raw;
+        for (HttpHandler h : httpHandlers) {
+            try {
+                HttpRequestToBeSent req = (HttpRequestToBeSent) MontoyaObjects.request(svc, cur, null);
+                RequestToBeSentAction a = h.handleHttpRequestToBeSent(req);
+                if (a == null) {
+                    continue;
+                }
+                Object action = a.action();
+                if (action != null && action.toString().contains("DROP")) {
+                    return new String[]{"drop", ""};
+                }
+                HttpRequest out = a.request();
+                if (out != null) {
+                    cur = out.toByteArray().getBytes();
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+        return new String[]{"continue", Base64.getEncoder().encodeToString(cur)};
+    }
+
+    /** Run a response through every HTTP handler in turn; returns {action, base64}. */
+    static String[] dispatchResponse(HttpService svc, byte[] raw) {
+        byte[] cur = raw;
+        for (HttpHandler h : httpHandlers) {
+            try {
+                HttpResponseReceived resp = (HttpResponseReceived) MontoyaObjects.response(cur, null);
+                ResponseReceivedAction a = h.handleHttpResponseReceived(resp);
+                if (a == null) {
+                    continue;
+                }
+                HttpResponse out = a.response();
+                if (out != null) {
+                    cur = out.toByteArray().getBytes();
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+        return new String[]{"continue", Base64.getEncoder().encodeToString(cur)};
+    }
+
+    static void reportHandlerError(Throwable t) {
+        String s = t.getClass().getSimpleName() + ": " + t.getMessage();
+        errors.add(s);
+        if (serve) {
+            out.println("@ERR:" + s);
+            out.flush();
+        }
+    }
+
+    static int parseIntOr(String s, int dflt) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (Exception e) {
+            return dflt;
+        }
+    }
 
     static void showTab(String title, java.awt.Component comp) {
         if (probe) {
