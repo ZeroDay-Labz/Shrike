@@ -565,10 +565,7 @@ pub async fn run(
         // Scope enforcement: an automated tool must never send out of scope.
         if let Some(scope) = &scope {
             let path = spec.target.split('?').next().unwrap_or(&spec.target);
-            let ok = scope
-                .read()
-                .expect("scope lock")
-                .in_scope(&service, path);
+            let ok = scope.read().expect("scope lock").in_scope(&service, path);
             if !ok {
                 let _ = tx.send(AttackResult {
                     index: index as u64,
@@ -972,9 +969,13 @@ mod tests {
     #[test]
     fn transient_errors_are_retryable_but_malformed_requests_are_not() {
         assert!(is_transient("request timed out after 10000 ms"));
-        assert!(is_transient("error sending request: connection reset by peer"));
+        assert!(is_transient(
+            "error sending request: connection reset by peer"
+        ));
         assert!(is_transient("connection closed before message completed"));
-        assert!(is_transient("tcp connect error: Connection refused (os error 111)"));
+        assert!(is_transient(
+            "tcp connect error: Connection refused (os error 111)"
+        ));
         assert!(!is_transient("invalid URL \"http://\""));
         assert!(!is_transient("invalid method \"GE T\""));
     }

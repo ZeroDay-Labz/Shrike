@@ -667,7 +667,9 @@ async fn spawn_flaky_upstream(fail_first: usize) -> SocketAddr {
                     drop(s); // close without responding → transient client error
                 } else {
                     let _ = s
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
                         .await;
                     let _ = s.flush().await;
                 }
@@ -753,7 +755,10 @@ fn intruder_retries_transient_failures_until_success() {
 
     let (ok, err, completed) = run_single_attack(&engine, login_bruteforce_config(up, 3));
     assert_eq!(ok, 1, "the request eventually succeeds after retries");
-    assert_eq!(err, 0, "transient failures are retried, not reported as errors");
+    assert_eq!(
+        err, 0,
+        "transient failures are retried, not reported as errors"
+    );
     assert_eq!(completed, 1);
 }
 
@@ -776,7 +781,10 @@ fn intruder_retries_are_bounded_when_target_never_recovers() {
 
     let (ok, err, completed) = run_single_attack(&engine, login_bruteforce_config(up, 2));
     assert_eq!(ok, 0);
-    assert_eq!(err, 1, "exhausted retries collapse to a single error result");
+    assert_eq!(
+        err, 1,
+        "exhausted retries collapse to a single error result"
+    );
     assert_eq!(completed, 1, "the attack terminates instead of looping");
 }
 
