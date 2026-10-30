@@ -5,6 +5,7 @@
 //! driven) builds on the same Findings output and lands in an `active` module.
 
 pub mod active;
+pub mod js_libs;
 pub mod jwt_scan;
 pub mod passive;
 

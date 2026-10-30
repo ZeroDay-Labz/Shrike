@@ -80,6 +80,16 @@ pub const CATALOG: &[Extra] = &[
         default_enabled: true,
     },
     Extra {
+        id: "js-vuln-libs",
+        name: "Vulnerable JS libraries",
+        category: "Passive checks",
+        kind: ExtraKind::Passive,
+        description: "Fingerprints front-end JavaScript libraries by version (from script \
+                      URLs and inline banners) and flags versions with publicly known \
+                      vulnerabilities — a native equivalent of the retire.js scanner.",
+        default_enabled: true,
+    },
+    Extra {
         id: "pwnfox",
         name: "Container colouring",
         category: "Workflow",

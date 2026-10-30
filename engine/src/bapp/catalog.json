@@ -90,6 +90,6 @@
     "repo_url": "https://github.com/h3xstream/burp-retire-js",
     "listing_url": "https://github.com/h3xstream/burp-retire-js",
     "runtime": "Java (Montoya API, JVM)",
-    "native_equivalent": null
+    "native_equivalent": "Vulnerable JS libraries (built-in passive check, enabled by default in Extras)"
   }
 ]

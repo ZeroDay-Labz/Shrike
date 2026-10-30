@@ -125,6 +125,11 @@ pub fn run_checks(txn: &Transaction, enabled: &std::collections::HashSet<String>
     if enabled.contains("jwt") {
         hits.extend(crate::scanner::jwt_scan::jwt_hits(txn, now_unix_secs()));
     }
+    if enabled.contains("js-vuln-libs")
+        && (is_html || ctype.is_some_and(|c| c.contains("javascript")))
+    {
+        hits.extend(crate::scanner::js_libs::js_library_hits(txn, &body, resp));
+    }
     hits
 }
 

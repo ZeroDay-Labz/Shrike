@@ -28,10 +28,12 @@ export function ExtensionTab(props: {
   const name = meta?.name || installed?.name || installed?.filename || "Extension";
   const registered = meta?.registered ?? installed?.registered ?? [];
   const hooks = registered.filter((r) => !r.startsWith("suiteTab:"));
-  // What the host actually delivers today: logging output and standalone Swing
-  // UI windows. Traffic/scan/menu handlers are recorded but not yet wired to the
-  // engine, so we label them honestly instead of implying they work.
-  const WIRED = /logging|output|print/i;
+  // What the host delivers today: logging output, standalone Swing UI windows,
+  // and — through the traffic bridge — the Montoya HTTP handlers, which receive
+  // and can modify live proxy traffic. Context-menu, scanner and legacy
+  // (Python/listener) hooks are recorded but not yet wired, so label them
+  // honestly rather than implying they work.
+  const WIRED = /logging|output|print|HttpHandler|ResponseHandler|ProxyRequestHandler|ProxyResponseHandler/i;
   const wired = hooks.filter((h) => WIRED.test(h));
   const notWired = hooks.filter((h) => !WIRED.test(h));
   const tabs = meta?.suite_tabs
@@ -81,9 +83,9 @@ export function ExtensionTab(props: {
           </div>
           {notWired.length > 0 && (
             <div className="exttab-note warn">
-              This extension loads and its UI/logging work, but the handlers above
-              ({notWired.length}) don't receive traffic yet — Shrike doesn't fully
-              run extension HTTP/scan/menu hooks. Full support is in progress.
+              The extension's HTTP handlers (if any) process live traffic. The
+              remaining hooks above ({notWired.length}) — context-menu, scanner and
+              legacy listener hooks — aren't wired yet; support is in progress.
             </div>
           )}
         </div>
