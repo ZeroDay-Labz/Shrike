@@ -6,6 +6,9 @@
 //! Python (Jython) extensions are run through the same host with the Jython jar on
 //! the classpath (scaffolded).
 
+mod serve;
+pub use serve::{HandlerAction, Phase, ServeHost, Target, process_chain};
+
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
