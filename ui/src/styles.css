@@ -230,11 +230,25 @@ option, optgroup { background: var(--surface-1); color: var(--fg); }
 .switch { width: 28px; height: 16px; border-radius: 999px; background: var(--line-2); position: relative; transition: background .15s; flex: 0 0 auto; }
 .switch i { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff;
   box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s ease; }
-.switch-btn.on { border-color: color-mix(in srgb, var(--brand) 55%, transparent); background: var(--brand-weak); }
-.switch-btn.on .switch { background: var(--brand-strong); }
+/* Intercept ON must be unmissable: a forgotten toggle silently stalls the
+   browser while the user is on another tab. Make it a bold, solid accent. */
+.switch-btn.on { border-color: var(--brand-strong); background: var(--brand-strong); color: #fff; font-weight: 650;
+  box-shadow: 0 0 0 1px var(--brand-strong), 0 2px 10px color-mix(in srgb, var(--brand-strong) 40%, transparent); }
+.switch-btn.on:hover { background: var(--brand-strong); filter: brightness(1.08); }
+.switch-btn.on .switch { background: rgba(255,255,255,.35); }
 .switch-btn.on .switch i { transform: translateX(12px); }
-.switch-btn.held { border-color: var(--warn); }
+/* Requests are queued and waiting: escalate to an urgent, pulsing warn state. */
+.switch-btn.held { border-color: var(--warn); background: var(--warn); color: #1a1200;
+  box-shadow: 0 0 0 1px var(--warn), 0 2px 12px color-mix(in srgb, var(--warn) 55%, transparent);
+  animation: intercept-pulse 1.3s ease-in-out infinite; }
+.switch-btn.held .switch { background: rgba(0,0,0,.28); }
+.switch-btn.held .count { background: #1a1200; color: var(--warn); }
 .switch-btn .count { background: var(--warn); color: #1a1200; border-radius: 999px; padding: 0 7px; font-size: 11px; font-weight: 700; }
+@keyframes intercept-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--warn), 0 2px 12px color-mix(in srgb, var(--warn) 55%, transparent); }
+  50% { box-shadow: 0 0 0 1px var(--warn), 0 2px 18px color-mix(in srgb, var(--warn) 85%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .switch-btn.held { animation: none; } }
 .proj { display: flex; align-items: center; gap: 7px; color: var(--mut); font-size: 12.5px; }
 .proj > svg { color: var(--faint); flex: 0 0 auto; }
 .proj-name { background: none; border: none; color: var(--fg); font-weight: 600; cursor: pointer;

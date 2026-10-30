@@ -42,6 +42,9 @@ public final class Host {
     static final LinkedHashSet<String> registered = new LinkedHashSet<>();
     static String extName = null;
     static int uiWindows = 0;
+    /** Swing windows currently open; when this hits zero for a UI-only extension
+     *  (no traffic handlers), the extension is no longer in use, so we stop. */
+    static int openWindows = 0;
     /** "probe" = load, report, exit (never block); "run" = keep UI alive. */
     static boolean probe = true;
     /** "serve" = load, then process traffic frames on stdin/stdout until EOF. */
@@ -365,7 +368,22 @@ public final class Host {
             f.setSize(900, 600);
             f.setVisible(true);
             uiWindows++;
+            openWindows++;
             registered.add("suiteTab:" + title);
+            // When the user closes the last window of a UI-only extension (one with
+            // no traffic handlers), it is no longer being used, so stop it. An
+            // extension that also processes traffic keeps running after its window
+            // closes.
+            f.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override public void windowClosed(java.awt.event.WindowEvent e) {
+                    openWindows--;
+                    if (openWindows <= 0 && httpHandlers.isEmpty()) {
+                        out.println("@OUT:all extension windows closed — stopping");
+                        out.flush();
+                        System.exit(0);
+                    }
+                }
+            });
         } catch (Throwable t) {
             registered.add("suiteTab(no-display):" + title);
         }
