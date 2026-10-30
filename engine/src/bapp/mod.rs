@@ -135,6 +135,24 @@ pub fn parse_github_repos(json: &str) -> Result<Vec<BappEntry>> {
 }
 
 /// Blob (file) paths from a GitHub `git/trees/...?recursive=1` response.
+/// Extract `owner/repo` from a GitHub repository URL. Returns `None` for a
+/// non-github.com URL so the caller can fall back to its default org. Used so a
+/// catalog entry that lives outside the mirror org (e.g. `h3xstream/burp-retire-js`)
+/// is fetched from its real repository, not a guessed `<org>/<id>`.
+pub fn github_slug(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("https://www.github.com/"))?;
+    let mut parts = rest.trim_end_matches('/').split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim().trim_end_matches(".git");
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
 pub fn parse_tree_paths(json: &str) -> Vec<String> {
     #[derive(Deserialize)]
     struct Entry {
@@ -410,6 +428,25 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageInspection> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn github_slug_extracts_owner_and_repo() {
+        assert_eq!(
+            github_slug("https://github.com/h3xstream/burp-retire-js"),
+            Some("h3xstream/burp-retire-js".into())
+        );
+        assert_eq!(
+            github_slug("https://github.com/PortSwigger/logger/"),
+            Some("PortSwigger/logger".into())
+        );
+        assert_eq!(
+            github_slug("https://github.com/owner/repo.git"),
+            Some("owner/repo".into())
+        );
+        // Not a github URL, or incomplete → None (caller falls back to the org).
+        assert_eq!(github_slug("https://gitlab.com/a/b"), None);
+        assert_eq!(github_slug("https://github.com/only-owner"), None);
+    }
 
     #[test]
     fn catalog_parses_and_is_non_empty() {

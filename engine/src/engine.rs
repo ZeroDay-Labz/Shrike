@@ -1084,9 +1084,14 @@ impl Engine {
             });
         }
 
+        // The repository to fetch from: the entry's own repo when it lives outside
+        // the mirror org (e.g. retire.js → h3xstream/burp-retire-js), else the
+        // mirror's `<org>/<id>`.
+        let slug = bapp::github_slug(&entry.repo_url).unwrap_or_else(|| format!("{BAPP_ORG}/{id}"));
+
         // Most catalog mirrors publish no releases, and GitHub answers that with
         // a 404 — which means "no release package", not a failed install.
-        let api = format!("https://api.github.com/repos/{BAPP_ORG}/{id}/releases/latest");
+        let api = format!("https://api.github.com/repos/{slug}/releases/latest");
         let release = match curl_text(&api, self.github_token().as_deref()) {
             Ok(body) => bapp::parse_release_asset(&body),
             Err(e) => {
@@ -1101,7 +1106,7 @@ impl Engine {
         }
         // No release package — install from source when that needs no
         // compilation: a committed package, or a Python extension's module tree.
-        match self.try_install_from_source(id)? {
+        match self.try_install_from_source(id, &slug)? {
             SourceInstall::Installed(installed) => {
                 return Ok(InstallOutcome::Installed { installed });
             }
@@ -1135,9 +1140,8 @@ impl Engine {
     /// followed when present: a Python extension's whole module tree, or a
     /// committed package. Without a manifest, fall back to the first plausible
     /// committed `.jar`/`.bapp`, or a `.py` that looks like an extension.
-    fn try_install_from_source(&self, id: &str) -> Result<SourceInstall> {
-        let tree_api =
-            format!("https://api.github.com/repos/{BAPP_ORG}/{id}/git/trees/HEAD?recursive=1");
+    fn try_install_from_source(&self, id: &str, slug: &str) -> Result<SourceInstall> {
+        let tree_api = format!("https://api.github.com/repos/{slug}/git/trees/HEAD?recursive=1");
         let body = match curl_text(&tree_api, self.github_token().as_deref()) {
             Ok(b) => b,
             Err(_) => return Ok(SourceInstall::Nothing),
@@ -1145,7 +1149,7 @@ impl Engine {
         let paths = bapp::parse_tree_paths(&body);
         let raw_url = |path: &str| {
             format!(
-                "https://raw.githubusercontent.com/{BAPP_ORG}/{id}/HEAD/{}",
+                "https://raw.githubusercontent.com/{slug}/HEAD/{}",
                 path.replace(' ', "%20")
             )
         };
