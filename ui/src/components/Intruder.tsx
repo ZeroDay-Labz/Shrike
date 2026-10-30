@@ -6,11 +6,17 @@ import type { AttackResult, AttackType, Generator, IntruderConfig, PreviewResult
 import { api, events } from "../api";
 import { statusClass, humanBytes } from "../util";
 import { SplitPane } from "./SplitPane";
-import { confirmAction } from "./Overlay";
+import { confirmAction, toast } from "./Overlay";
 import { markerHighlight } from "../cm-markers";
 import { shrikeEditorTheme } from "../cm-theme";
 
 const MARK = "§"; // §
+const MAX_THREADS = 512; // mirrors the engine's MAX_CONCURRENCY ceiling
+
+const clampThreads = (v: string) => Math.max(1, Math.min(MAX_THREADS, Number(v) || 1));
+const clampDelay = (v: string) => Math.max(0, Number(v) || 0);
+const clampRetries = (v: string) => Math.max(0, Math.min(10, Number(v) || 0));
+const clampTimeout = (v: string) => Math.max(1, Math.min(120, Number(v) || 10)); // seconds
 
 const ATTACKS: { v: AttackType; label: string; hint: string }[] = [
   { v: "sniper", label: "Sniper", hint: "one set; fuzz each position in turn" },
@@ -24,8 +30,15 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   const [template, setTemplate] = useState<string>("GET / HTTP/1.1\nHost: example.com\n\n");
   const [attack, setAttack] = useState<AttackType>("sniper");
   const [sets, setSets] = useState<string[]>([""]);
-  const [concurrency, setConcurrency] = useState(10);
-  const [delay, setDelay] = useState(0);
+  // Threads/Delay are held as the raw text the user typed so the field can be
+  // cleared to empty (to type a fresh number) instead of snapping to a floor on
+  // every keystroke. They're coerced to valid numbers only where used.
+  const [concurrency, setConcurrency] = useState("10");
+  const [delay, setDelay] = useState("0");
+  // Resilience: retry transient failures and cap per-request wait so a target
+  // that stalls under load doesn't lose results or wedge the whole attack.
+  const [retries, setRetries] = useState("3");
+  const [timeoutS, setTimeoutS] = useState("10");
   const [proc, setProc] = useState({ url: false, b64: false, hex: false, upper: false, lower: false });
   const [prefix, setPrefix] = useState("");
   const [suffix, setSuffix] = useState("");
@@ -37,6 +50,11 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   const [capped, setCapped] = useState(false);
   const [sortKey, setSortKey] = useState<"index" | "status" | "length" | "duration_ms">("index");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
+  // Intruder enforces target scope by default (active tools are deliberate and
+  // must not touch anything out of scope). If the target isn't in scope the
+  // engine refuses the attack, so we surface that here before Start is pressed.
+  const [requireScope, setRequireScope] = useState(false);
+  const [scopeOk, setScopeOk] = useState<boolean | null>(null);
 
   const viewRef = useRef<EditorView | null>(null);
   const attackIdRef = useRef<number | undefined>(undefined);
@@ -44,6 +62,40 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   useEffect(() => {
     if (props.seed) { setService(props.seed.service); setTemplate(props.seed.raw); }
   }, [props.seed]);
+
+  // Learn whether Intruder requires scope (the default). Only then do we check
+  // the current target and warn, so a user who turned the requirement off never
+  // sees scope friction.
+  useEffect(() => {
+    api.configGet().then((c) => setRequireScope(!!c.intruder_require_scope)).catch(() => {});
+  }, []);
+
+  const targetUrl = useMemo(
+    () => `${service.secure ? "https" : "http"}://${service.host}:${service.port}/`,
+    [service.secure, service.host, service.port],
+  );
+
+  useEffect(() => {
+    if (!requireScope || !service.host) { setScopeOk(null); return; }
+    let live = true;
+    api.scopeCheck(targetUrl).then((ok) => { if (live) setScopeOk(ok); }).catch(() => { if (live) setScopeOk(null); });
+    return () => { live = false; };
+  }, [requireScope, targetUrl, service.host]);
+
+  async function addTargetToScope() {
+    try {
+      const rules = await api.scopeGet();
+      await api.scopeSet([
+        ...rules,
+        { enabled: true, kind: "include" as const, host: service.host, port: null, path: null, is_regex: false },
+      ]);
+      const ok = await api.scopeCheck(targetUrl);
+      setScopeOk(ok);
+      toast(ok ? `Added ${service.host} to target scope` : "Added rule, but target still isn't in scope", ok ? "success" : "error");
+    } catch (e) { toast(String(e), "error"); }
+  }
+
+  const scopeBlocked = requireScope && scopeOk === false;
 
   useEffect(() => {
     const un = events.onIntruder((ev) => {
@@ -91,7 +143,9 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   const buildConfig = (): IntruderConfig => ({
     service, template, attack,
     payload_sets: sets.map((s) => s.split("\n").filter((x) => x.length > 0)),
-    concurrency, delay_ms: delay, processors: buildProcessors(),
+    concurrency: clampThreads(concurrency), delay_ms: clampDelay(delay),
+    max_retries: clampRetries(retries), request_timeout_ms: clampTimeout(timeoutS) * 1000,
+    processors: buildProcessors(),
   });
 
   useEffect(() => {
@@ -125,7 +179,7 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
     try {
       const id = await api.intruderStart(buildConfig());
       attackIdRef.current = id;
-    } catch (e) { setRunning(false); attackIdRef.current = undefined; alert(String(e)); }
+    } catch (e) { setRunning(false); attackIdRef.current = undefined; toast(String(e), "error"); }
   }
   function stop() { if (attackIdRef.current != null) api.intruderStop(attackIdRef.current); }
 
@@ -137,6 +191,8 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
     });
     return r;
   }, [results, sortKey, sortDir]);
+
+  const errorCount = useMemo(() => results.reduce((a, r) => a + (r.error ? 1 : 0), 0), [results]);
 
   const resultsParentRef = useRef<HTMLDivElement>(null);
   const rowVirt = useVirtualizer({
@@ -183,9 +239,22 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
       </div>
       <div className="intr-nums">
         <label className="fld">Threads<input value={concurrency} inputMode="numeric"
-          onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))} /></label>
+          onChange={(e) => setConcurrency(e.target.value.replace(/[^0-9]/g, ""))}
+          onBlur={() => setConcurrency((v) => String(clampThreads(v)))} /></label>
         <label className="fld">Delay ms<input value={delay} inputMode="numeric"
-          onChange={(e) => setDelay(Math.max(0, Number(e.target.value) || 0))} /></label>
+          onChange={(e) => setDelay(e.target.value.replace(/[^0-9]/g, ""))}
+          onBlur={() => setDelay((v) => String(clampDelay(v)))} /></label>
+        <label className="fld" title="Re-send a request that fails with a transient error (timeout, connection reset). 0 = never retry.">
+          Retries<input value={retries} inputMode="numeric"
+          onChange={(e) => setRetries(e.target.value.replace(/[^0-9]/g, ""))}
+          onBlur={() => setRetries((v) => String(clampRetries(v)))} /></label>
+        <label className="fld" title="Per-request timeout. A stalled request frees its slot after this and (if retries remain) is retried.">
+          Timeout s<input value={timeoutS} inputMode="numeric"
+          onChange={(e) => setTimeoutS(e.target.value.replace(/[^0-9]/g, ""))}
+          onBlur={() => setTimeoutS((v) => String(clampTimeout(v)))} /></label>
+      </div>
+      <div className="mut small intr-resil">
+        Resilient pacing is automatic: runs at full speed when the target is healthy and backs off when it starts timing out, then recovers.
       </div>
       <div className="fld">Payload processing (applied top to bottom)
         <div className="proc-row">
@@ -246,15 +315,22 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
         <div className="th" style={{ flex: "0 0 80px", cursor: "pointer" }} onClick={() => sortBy("duration_ms")}>Time{arrow("duration_ms")}</div>
       </div>
       <div className="tbody" ref={resultsParentRef}>
-        {sorted.length === 0 && <div className="hint">results appear here when an attack runs</div>}
+        {sorted.length === 0 && (
+          <div className="hint">
+            {running
+              ? `Sending ${total ? total.toLocaleString() + " " : ""}requests — waiting for the first response. If nothing arrives, the target may be unreachable; each request times out after 30s and will show as ERR.`
+              : "results appear here when an attack runs"}
+          </div>
+        )}
         <div style={{ height: rowVirt.getTotalSize(), width: "100%", position: "relative" }}>
           {rowVirt.getVirtualItems().map((item) => {
             const r = sorted[item.index];
             return (
-              <div className="tr" key={r.index} style={{ transform: `translateY(${item.start}px)` }}>
+              <div className={"tr" + (r.error ? " err" : "")} key={r.index} title={r.error ?? undefined}
+                style={{ transform: `translateY(${item.start}px)` }}>
                 <div className="td num" style={{ flex: "0 0 56px" }}>{r.index}</div>
-                <div className="td" style={{ flex: "2 1 220px" }} title={r.payloads.join(" | ")}>{r.payloads.join(" | ")}</div>
-                <div className={"td " + statusClass(r.status)} style={{ flex: "0 0 70px" }}>{r.error ? "ERR" : r.status}</div>
+                <div className="td" style={{ flex: "2 1 220px" }} title={r.error ?? r.payloads.join(" | ")}>{r.payloads.join(" | ")}</div>
+                <div className={"td " + statusClass(r.status)} style={{ flex: "0 0 70px" }} title={r.error ?? undefined}>{r.error ? "ERR" : r.status}</div>
                 <div className="td num" style={{ flex: "0 0 90px" }}>{r.error ? "" : humanBytes(r.length)}</div>
                 <div className="td num" style={{ flex: "0 0 80px" }}>{r.error ? "" : r.duration_ms + " ms"}</div>
               </div>
@@ -282,9 +358,16 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
         <button className="link" onClick={() => setShowPreview((v) => !v)}>{showPreview ? "hide preview" : "preview"}</button>
         {running
           ? <button className="btn stop" onClick={stop}>■ Stop</button>
-          : <button className="btn start" disabled={posCount === 0} onClick={start}>▶ Start</button>}
-        <span className="mut small">{results.length}{total ? `/${total}` : ""}{running ? " running" : ""}{capped ? " capped" : ""}</span>
+          : <button className="btn start" disabled={posCount === 0 || scopeBlocked} onClick={start}>▶ Start</button>}
+        <span className="mut small">{results.length}{total ? `/${total}` : ""}{errorCount ? ` · ${errorCount} err` : ""}{running ? " · running" : ""}{capped ? " · capped" : ""}</span>
       </div>
+      {scopeBlocked && (
+        <div className="warnbar intr-scopebar">
+          <span><b>{service.host}</b> isn’t in your target scope, so Intruder will refuse this attack.</span>
+          <button className="link" onClick={addTargetToScope}>Add {service.host} to scope</button>
+          <span className="mut small">or turn off “require scope for Intruder” in Settings.</span>
+        </div>
+      )}
       <SplitPane direction="vertical" storageKey="shrike.intr.v" defaultSize={64}
         first={
           <SplitPane direction="horizontal" storageKey="shrike.intr.h" defaultSize={58}

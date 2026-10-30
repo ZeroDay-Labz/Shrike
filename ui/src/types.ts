@@ -189,6 +189,8 @@ export interface IntruderConfig {
   payload_sets: string[][];
   concurrency: number;
   delay_ms: number;
+  max_retries: number;
+  request_timeout_ms: number;
   processors: Processor[];
 }
 

@@ -50,8 +50,19 @@ pub struct IntruderConfig {
     pub payload_sets: Vec<Vec<String>>,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// A floor delay between dispatches. 0 = run at full concurrency (fast); the
+    /// adaptive pacer only ever *raises* the live delay above this under stress.
     #[serde(default)]
     pub delay_ms: u64,
+    /// How many times to re-send a request that failed with a *transient* error
+    /// (timeout, connection reset/closed/refused). 0 = never retry. Lets a run
+    /// ride out a target that stalls instead of losing that payload's result.
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Per-request timeout in ms. Shorter than the global sender timeout so a
+    /// stalled request frees its slot quickly and the attack keeps moving.
+    #[serde(default = "default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
     /// Transformations applied to every payload before insertion, in order.
     #[serde(default)]
     pub processors: Vec<Processor>,
@@ -59,6 +70,81 @@ pub struct IntruderConfig {
 
 fn default_concurrency() -> usize {
     10
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_request_timeout_ms() -> u64 {
+    10_000
+}
+
+/// Adaptive pacing (congestion control for an attack). Keeps a live inter-dispatch
+/// delay that starts at the configured floor and climbs on transient failures,
+/// then decays back toward the floor as requests succeed — so a healthy target
+/// runs at full speed and a stalling one is automatically backed off instead of
+/// hammered into the ground. Purely a throttle: it never sends anything itself.
+struct Pacer {
+    delay_ms: std::sync::atomic::AtomicU64,
+    floor: u64,
+    cap: u64,
+}
+
+impl Pacer {
+    const BACKOFF_FLOOR: u64 = 25;
+    const CAP: u64 = 2_000;
+
+    fn new(floor: u64) -> Self {
+        Self {
+            delay_ms: std::sync::atomic::AtomicU64::new(floor),
+            floor,
+            cap: Self::CAP.max(floor),
+        }
+    }
+
+    fn current(&self) -> u64 {
+        self.delay_ms.load(Ordering::Relaxed)
+    }
+
+    /// A clean response: decay 10% toward the floor (at least 5ms), so the attack
+    /// speeds back up as the target recovers.
+    fn on_success(&self) {
+        let d = self.delay_ms.load(Ordering::Relaxed);
+        let step = (d / 10).max(5);
+        let next = self.floor.max(d.saturating_sub(step));
+        self.delay_ms.store(next, Ordering::Relaxed);
+    }
+
+    /// A transient failure: jump to a small backoff floor on the first step, then
+    /// double on each further failure, up to the cap.
+    fn on_transient_failure(&self) {
+        let d = self.delay_ms.load(Ordering::Relaxed);
+        let next = if d < Self::BACKOFF_FLOOR {
+            Self::BACKOFF_FLOOR
+        } else {
+            d.saturating_mul(2)
+        };
+        self.delay_ms.store(next.min(self.cap), Ordering::Relaxed);
+    }
+}
+
+/// Whether a send error is worth retrying (the target hiccuped) rather than a
+/// permanent problem with the request itself.
+fn is_transient(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("invalid") {
+        return false; // a malformed method/URL won't fix itself
+    }
+    m.contains("timed out")
+        || m.contains("timeout")
+        || m.contains("connection")
+        || m.contains("connect")
+        || m.contains("reset")
+        || m.contains("broken pipe")
+        || m.contains("refused")
+        || m.contains("closed")
+        || m.contains("os error")
 }
 
 /// Predicted number of requests for an attack, or `None` if it overflows u64.
@@ -135,7 +221,14 @@ pub enum AttackEvent {
     Result(AttackResult),
     /// A coalesced batch of results. Emitting results in batches (rather than one
     /// event per request) keeps a 50k-request attack from flooding the UI transport.
-    Results(Vec<AttackResult>),
+    ///
+    /// This is a struct variant (not `Results(Vec<_>)`) on purpose: an internally
+    /// tagged enum (`tag = "kind"`) CANNOT serialize a newtype variant wrapping a
+    /// sequence — serde errors at runtime, and the GUI's `let _ = app.emit(..)`
+    /// would swallow it, dropping every batch silently. A struct variant
+    /// serializes to `{"kind":"results","results":[..]}`, which is also the shape
+    /// the UI reads.
+    Results { results: Vec<AttackResult> },
     Done {
         attack_id: u64,
         completed: u64,
@@ -345,19 +438,19 @@ async fn batch_results(
                 Some(r) => {
                     buf.push(r);
                     if buf.len() >= flush_every {
-                        sink(AttackEvent::Results(std::mem::take(&mut buf)));
+                        sink(AttackEvent::Results { results: std::mem::take(&mut buf) });
                     }
                 }
                 None => {
                     if !buf.is_empty() {
-                        sink(AttackEvent::Results(std::mem::take(&mut buf)));
+                        sink(AttackEvent::Results { results: std::mem::take(&mut buf) });
                     }
                     return;
                 }
             },
             _ = tick.tick() => {
                 if !buf.is_empty() {
-                    sink(AttackEvent::Results(std::mem::take(&mut buf)));
+                    sink(AttackEvent::Results { results: std::mem::take(&mut buf) });
                 }
             }
         }
@@ -397,8 +490,16 @@ pub async fn run(
     let sem = Arc::new(Semaphore::new(config.concurrency.clamp(1, MAX_CONCURRENCY)));
     let clean = Arc::new(clean);
     let positions = Arc::new(positions);
-    let mut set = JoinSet::new();
-    let mut completed: u64 = 0;
+    let jobs = Arc::new(jobs);
+    let n_jobs = jobs.len();
+    let service = config.service.clone();
+    let req_timeout = Duration::from_millis(config.request_timeout_ms.max(1));
+    let max_retries = config.max_retries;
+    let pacer = Arc::new(Pacer::new(config.delay_ms));
+    // A job is "outstanding" until it reaches a terminal state (a result emitted);
+    // a transient failure that will be retried keeps it outstanding. The attack is
+    // done when none remain.
+    let outstanding = Arc::new(std::sync::atomic::AtomicUsize::new(n_jobs));
 
     // Results flow through a channel to a single collector that emits coalesced
     // batches, so emission rate is bounded no matter how fast requests complete.
@@ -409,21 +510,57 @@ pub async fn run(
         BATCH_FLUSH_EVERY,
         Duration::from_millis(BATCH_FLUSH_INTERVAL_MS),
     ));
+    // Transient failures that still have retries left come back here (job index +
+    // the attempt number just tried) and are re-dispatched ahead of fresh work.
+    let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, u32)>();
 
-    for (index, job) in jobs.into_iter().enumerate() {
-        if stop.load(Ordering::Relaxed) {
+    let mut set = JoinSet::new();
+    let mut next_initial = 0usize;
+
+    loop {
+        if stop.load(Ordering::Relaxed) || outstanding.load(Ordering::Relaxed) == 0 {
             break;
         }
+
+        // Prefer a retry; otherwise take the next fresh job; otherwise wait briefly
+        // for an in-flight request to either finish (dropping `outstanding`) or
+        // bounce back as a retry.
+        let (index, attempt) = match retry_rx.try_recv() {
+            Ok(item) => item,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) if next_initial < n_jobs => {
+                let i = next_initial;
+                next_initial += 1;
+                (i, 0)
+            }
+            _ => {
+                tokio::select! {
+                    item = retry_rx.recv() => match item {
+                        Some(it) => it,
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => continue,
+                }
+            }
+        };
+
         let permit = match Arc::clone(&sem).acquire_owned().await {
             Ok(p) => p,
             Err(_) => break,
         };
-        if config.delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(config.delay_ms)).await;
+        // Adaptive throttle: full speed when healthy, backed off when stalling.
+        let delay = pacer.current();
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
         }
+        if stop.load(Ordering::Relaxed) {
+            drop(permit);
+            break;
+        }
+
+        let job = &jobs[index];
         let raw = build(&clean, &positions, &job.repls);
-        let spec = parse_request(&raw, config.service.clone());
-        let display = job.display;
+        let spec = parse_request(&raw, service.clone());
+        let display = job.display.clone();
 
         // Scope enforcement: an automated tool must never send out of scope.
         if let Some(scope) = &scope {
@@ -431,7 +568,7 @@ pub async fn run(
             let ok = scope
                 .read()
                 .expect("scope lock")
-                .in_scope(&config.service, path);
+                .in_scope(&service, path);
             if !ok {
                 let _ = tx.send(AttackResult {
                     index: index as u64,
@@ -441,6 +578,7 @@ pub async fn run(
                     duration_ms: 0,
                     error: Some("blocked: out of target scope".into()),
                 });
+                outstanding.fetch_sub(1, Ordering::Relaxed);
                 drop(permit);
                 continue;
             }
@@ -448,51 +586,82 @@ pub async fn run(
 
         let sender = Arc::clone(&sender);
         let tx = tx.clone();
+        let retry_tx = retry_tx.clone();
+        let pacer = Arc::clone(&pacer);
+        let outstanding = Arc::clone(&outstanding);
         set.spawn(async move {
             let _permit = permit;
-            let result = match sender.send(spec).await {
-                Ok(out) => AttackResult {
-                    index: index as u64,
-                    payloads: display,
-                    status: Some(out.response.status),
-                    length: out.response.body.wire_len,
-                    duration_ms: out.duration_ms,
-                    error: None,
-                },
-                Err(e) => AttackResult {
-                    index: index as u64,
-                    payloads: display,
-                    status: None,
-                    length: 0,
-                    duration_ms: 0,
-                    error: Some(e.to_string()),
-                },
-            };
-            let _ = tx.send(result);
+            match tokio::time::timeout(req_timeout, sender.send(spec)).await {
+                Ok(Ok(out)) => {
+                    pacer.on_success();
+                    let _ = tx.send(AttackResult {
+                        index: index as u64,
+                        payloads: display,
+                        status: Some(out.response.status),
+                        length: out.response.body.wire_len,
+                        duration_ms: out.duration_ms,
+                        error: None,
+                    });
+                    outstanding.fetch_sub(1, Ordering::Relaxed);
+                }
+                Ok(Err(e)) => {
+                    // `{:#}` includes anyhow's full cause chain (the outer context
+                    // alone hides the underlying hyper/IO error we classify on).
+                    let msg = format!("{e:#}");
+                    if is_transient(&msg) && attempt < max_retries {
+                        pacer.on_transient_failure();
+                        let _ = retry_tx.send((index, attempt + 1));
+                    } else {
+                        let _ = tx.send(AttackResult {
+                            index: index as u64,
+                            payloads: display,
+                            status: None,
+                            length: 0,
+                            duration_ms: 0,
+                            error: Some(msg),
+                        });
+                        outstanding.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                Err(_) => {
+                    // our per-request deadline elapsed — a transient stall
+                    pacer.on_transient_failure();
+                    if attempt < max_retries {
+                        let _ = retry_tx.send((index, attempt + 1));
+                    } else {
+                        let _ = tx.send(AttackResult {
+                            index: index as u64,
+                            payloads: display,
+                            status: None,
+                            length: 0,
+                            duration_ms: 0,
+                            error: Some(format!(
+                                "request timed out after {} ms ({} attempts)",
+                                req_timeout.as_millis(),
+                                attempt + 1
+                            )),
+                        });
+                        outstanding.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
         });
     }
 
-    // Drain, but if Stop is pressed, abort outstanding requests so cancellation
-    // is immediate even against a server that holds the connection open.
-    while !set.is_empty() {
-        if stop.load(Ordering::Relaxed) {
-            set.abort_all();
-            while set.join_next().await.is_some() {}
-            break;
-        }
-        tokio::select! {
-            res = set.join_next() => match res {
-                Some(r) => { if r.is_ok() { completed += 1; } }
-                None => break,
-            },
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-        }
+    // Drain outstanding tasks; on Stop, abort them so cancellation is immediate
+    // even against a server holding connections open.
+    if stop.load(Ordering::Relaxed) {
+        set.abort_all();
     }
-    // Close the channel so the collector flushes its remainder and finishes.
+    while set.join_next().await.is_some() {}
+
+    // Close the channels so the collector flushes its remainder and finishes.
     drop(tx);
+    drop(retry_tx);
     let _ = collector.await;
 
     let stopped = stop.load(Ordering::Relaxed);
+    let completed = n_jobs as u64 - outstanding.load(Ordering::Relaxed) as u64;
     sink(AttackEvent::Done {
         attack_id,
         completed,
@@ -723,7 +892,7 @@ mod tests {
         let r2 = Arc::clone(&received);
         let c2 = Arc::clone(&calls);
         let sink: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(move |ev| {
-            if let AttackEvent::Results(batch) = ev {
+            if let AttackEvent::Results { results: batch } = ev {
                 c2.fetch_add(1, Ordering::Relaxed);
                 r2.lock().unwrap().extend(batch);
             } else {
@@ -764,6 +933,88 @@ mod tests {
         );
     }
 
+    /// Every `AttackEvent` variant must serialize to JSON, because the GUI
+    /// delivers them through `app.emit` (serde) and silently drops anything that
+    /// fails. A batch of results in particular must round-trip to the
+    /// `{"kind":"results","results":[..]}` shape the UI reads — regression guard
+    /// for the internally-tagged-newtype-over-sequence bug that dropped every
+    /// batch on the wire while the engine looked healthy.
+    #[test]
+    fn pacer_backs_off_on_failure_and_recovers_on_success() {
+        // Floor 0 (full speed): stays at 0 while healthy.
+        let p = Pacer::new(0);
+        assert_eq!(p.current(), 0);
+        p.on_success();
+        assert_eq!(p.current(), 0, "healthy target is never throttled");
+
+        // Transient failures climb (from the backoff floor), capped.
+        p.on_transient_failure();
+        assert_eq!(p.current(), Pacer::BACKOFF_FLOOR);
+        for _ in 0..20 {
+            p.on_transient_failure();
+        }
+        assert_eq!(p.current(), Pacer::CAP, "backoff is capped");
+
+        // Successes decay the delay back toward the floor.
+        for _ in 0..200 {
+            p.on_success();
+        }
+        assert_eq!(p.current(), 0, "recovers to the floor as the target heals");
+
+        // A non-zero configured floor is respected in both directions.
+        let p2 = Pacer::new(120);
+        p2.on_success();
+        assert_eq!(p2.current(), 120, "never decays below the configured floor");
+        p2.on_transient_failure();
+        assert!(p2.current() > 120 && p2.current() <= Pacer::CAP);
+    }
+
+    #[test]
+    fn transient_errors_are_retryable_but_malformed_requests_are_not() {
+        assert!(is_transient("request timed out after 10000 ms"));
+        assert!(is_transient("error sending request: connection reset by peer"));
+        assert!(is_transient("connection closed before message completed"));
+        assert!(is_transient("tcp connect error: Connection refused (os error 111)"));
+        assert!(!is_transient("invalid URL \"http://\""));
+        assert!(!is_transient("invalid method \"GE T\""));
+    }
+
+    #[test]
+    fn every_attack_event_serializes_for_the_gui_transport() {
+        let r = AttackResult {
+            index: 0,
+            payloads: vec!["p".into()],
+            status: Some(200),
+            length: 10,
+            duration_ms: 1,
+            error: None,
+        };
+        let started = serde_json::to_string(&AttackEvent::Started {
+            attack_id: 1,
+            total: 3,
+            capped: false,
+        })
+        .expect("started serializes");
+        assert!(started.contains("\"kind\":\"started\""));
+
+        let batch = serde_json::to_string(&AttackEvent::Results {
+            results: vec![r.clone(), r.clone()],
+        })
+        .expect("results batch must serialize (no tagged-newtype-over-seq)");
+        assert!(
+            batch.contains("\"kind\":\"results\"") && batch.contains("\"results\":["),
+            "batch shape the UI reads: {batch}"
+        );
+
+        serde_json::to_string(&AttackEvent::Result(r)).expect("single result serializes");
+        serde_json::to_string(&AttackEvent::Done {
+            attack_id: 1,
+            completed: 3,
+            stopped: false,
+        })
+        .expect("done serializes");
+    }
+
     #[test]
     fn preview_reports_count_and_first_requests() {
         let config = IntruderConfig {
@@ -777,6 +1028,8 @@ mod tests {
             payload_sets: vec![vec!["a".into(), "b".into(), "c".into()]],
             concurrency: 1,
             delay_ms: 0,
+            max_retries: 0,
+            request_timeout_ms: 30_000,
             processors: vec![],
         };
         let pv = preview(&config, 2);
@@ -800,6 +1053,8 @@ mod tests {
             payload_sets: vec![vec!["a b".into()]],
             concurrency: 1,
             delay_ms: 0,
+            max_retries: 0,
+            request_timeout_ms: 30_000,
             processors: vec![payload::Processor::UrlEncode],
         };
         let pv = preview(&config, 1);

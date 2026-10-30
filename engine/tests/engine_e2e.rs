@@ -377,6 +377,8 @@ fn intruder_sniper_runs_against_local_server() {
         payload_sets: vec![vec!["1".into(), "2".into(), "3".into()]],
         concurrency: 5,
         delay_ms: 0,
+        max_retries: 0,
+        request_timeout_ms: 30_000,
         processors: vec![],
     };
     // 127.0.0.1 must be in scope now that Intruder enforces it by default.
@@ -402,7 +404,7 @@ fn intruder_sniper_runs_against_local_server() {
                     ok_statuses += 1;
                 }
             }
-            AttackEvent::Results(batch) => {
+            AttackEvent::Results { results: batch } => {
                 for r in batch {
                     results += 1;
                     if r.status == Some(200) {
@@ -455,6 +457,8 @@ fn intruder_refuses_empty_scope_and_blocks_out_of_scope() {
         payload_sets: vec![vec!["1".into(), "2".into()]],
         concurrency: 2,
         delay_ms: 0,
+        max_retries: 0,
+        request_timeout_ms: 30_000,
         processors: vec![],
     };
     let noop: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(|_| {});
@@ -487,7 +491,7 @@ fn intruder_refuses_empty_scope_and_blocks_out_of_scope() {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("attack event")
         {
-            AttackEvent::Results(batch) => {
+            AttackEvent::Results { results: batch } => {
                 for r in batch {
                     if r.error.as_deref() == Some("blocked: out of target scope") {
                         blocked += 1;
@@ -503,6 +507,277 @@ fn intruder_refuses_empty_scope_and_blocks_out_of_scope() {
     }
     assert_eq!(blocked, 2, "both out-of-scope requests are blocked");
     assert_eq!(sent_ok, 0, "nothing out of scope reaches the server");
+}
+
+/// A login upstream that reads the whole JSON body and returns 200 only for the
+/// one correct password — like a real login endpoint under a brute-force attack.
+async fn login_upstream(
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    use http_body_util::BodyExt;
+    let body = req.collect().await?.to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    // Crude: match the password field value out of the JSON body.
+    let found_secret = text
+        .split("\"password\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .map(|pw| pw == "s3cr3t")
+        .unwrap_or(false);
+    let status = if found_secret { 200 } else { 401 };
+    Ok(Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(if found_secret {
+            "{\"authentication\":{\"token\":\"ok\"}}"
+        } else {
+            "{\"error\":\"invalid\"}"
+        })))
+        .unwrap())
+}
+
+async fn spawn_login_upstream() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service_fn(login_upstream))
+                    .await;
+            });
+        }
+    });
+    addr
+}
+
+/// Reproduction of the reported scenario: a Sniper attack with a large password
+/// wordlist fuzzing a `§`-marked value inside a POST JSON body (a Juice-Shop-style
+/// login brute force). Every generated request must actually be sent and reported
+/// — the attack must not stall — and exactly the one correct password gets a 200.
+#[test]
+fn intruder_large_json_body_bruteforce_streams_all_results() {
+    use std::sync::{Arc, mpsc};
+    let helper = Runtime::new().unwrap();
+    let up = helper.block_on(spawn_login_upstream());
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+    engine
+        .set_scope(vec![ScopeRule::include_host("127.0.0.1")])
+        .unwrap();
+
+    // 1500 passwords, with the one that works planted in the middle, so a stall
+    // (or a lost-after-N bug) would show up as a missing 200 or a short count.
+    const N: usize = 1500;
+    let mut words: Vec<String> = (0..N).map(|i| format!("pw{i}")).collect();
+    words[N / 2] = "s3cr3t".into();
+
+    let config = IntruderConfig {
+        service: HttpService {
+            host: "127.0.0.1".into(),
+            port: up.port(),
+            secure: false,
+        },
+        // A lowercase stale content-length header, exactly as a browser-captured
+        // request carries it — the sender must recompute it per payload.
+        template: format!(
+            "POST /rest/user/login HTTP/1.1\r\nhost: 127.0.0.1:{}\r\ncontent-type: application/json\r\ncontent-length: 34\r\n\r\n{{\"email\":\"a@b.c\",\"password\":\"\u{00a7}test\u{00a7}\"}}",
+            up.port()
+        ),
+        attack: AttackType::Sniper,
+        payload_sets: vec![words],
+        concurrency: 10,
+        delay_ms: 0,
+        max_retries: 0,
+        request_timeout_ms: 30_000,
+        processors: vec![],
+    };
+
+    let (tx, rx) = mpsc::channel::<AttackEvent>();
+    let sink: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(move |ev| {
+        let _ = tx.send(ev);
+    });
+    engine.intruder_start(config, sink).unwrap();
+
+    let mut total = 0u64;
+    let mut results = 0u64;
+    let mut ok = 0u64;
+    let mut errors = 0u64;
+    loop {
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("attack event (a stall would time out here)")
+        {
+            AttackEvent::Started { total: t, .. } => total = t,
+            AttackEvent::Result(r) => {
+                results += 1;
+                if r.status == Some(200) {
+                    ok += 1;
+                }
+                if r.error.is_some() {
+                    errors += 1;
+                }
+            }
+            AttackEvent::Results { results: batch } => {
+                for r in batch {
+                    results += 1;
+                    if r.status == Some(200) {
+                        ok += 1;
+                    }
+                    if r.error.is_some() {
+                        errors += 1;
+                    }
+                }
+            }
+            AttackEvent::Done { completed, .. } => {
+                assert_eq!(completed, N as u64, "every request must complete");
+                break;
+            }
+        }
+    }
+    assert_eq!(total, N as u64, "all payloads generated");
+    assert_eq!(results, N as u64, "every request streamed a result");
+    assert_eq!(errors, 0, "no request errored against a healthy server");
+    assert_eq!(ok, 1, "exactly the planted correct password got a 200");
+}
+
+/// A target that drops (closes without answering) its first `fail_first`
+/// connections, then serves 200 — a stand-in for a box that stalls under load and
+/// then recovers. Each drop surfaces to the client as a transient connection error.
+async fn spawn_flaky_upstream(fail_first: usize) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let seen = Arc::clone(&seen);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await; // consume the request line/headers
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < fail_first {
+                    drop(s); // close without responding → transient client error
+                } else {
+                    let _ = s
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                    let _ = s.flush().await;
+                }
+            });
+        }
+    });
+    addr
+}
+
+fn login_bruteforce_config(addr: SocketAddr, max_retries: u32) -> IntruderConfig {
+    IntruderConfig {
+        service: HttpService {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            secure: false,
+        },
+        template: format!(
+            "GET /q?v=\u{00a7}base\u{00a7} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            addr.port()
+        ),
+        attack: AttackType::Sniper,
+        payload_sets: vec![vec!["only".into()]],
+        concurrency: 1,
+        delay_ms: 0,
+        max_retries,
+        request_timeout_ms: 5_000,
+        processors: vec![],
+    }
+}
+
+fn run_single_attack(engine: &Engine, config: IntruderConfig) -> (u64, u64, u64) {
+    use std::sync::{Arc, mpsc};
+    let (tx, rx) = mpsc::channel::<AttackEvent>();
+    let sink: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(move |ev| {
+        let _ = tx.send(ev);
+    });
+    engine.intruder_start(config, sink).unwrap();
+    let (mut ok, mut err) = (0u64, 0u64);
+    loop {
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("attack event")
+        {
+            AttackEvent::Results { results } => {
+                for r in results {
+                    if r.error.is_some() {
+                        err += 1;
+                    } else {
+                        ok += 1;
+                    }
+                }
+            }
+            AttackEvent::Result(r) => {
+                if r.error.is_some() {
+                    err += 1;
+                } else {
+                    ok += 1;
+                }
+            }
+            AttackEvent::Done { completed, .. } => return (ok, err, completed),
+            AttackEvent::Started { .. } => {}
+        }
+    }
+}
+
+/// Resilience: a request that fails transiently is retried, so a target that
+/// drops the first two connections then recovers still yields a successful
+/// result — the hit isn't lost to a stall.
+#[test]
+fn intruder_retries_transient_failures_until_success() {
+    let helper = Runtime::new().unwrap();
+    let up = helper.block_on(spawn_flaky_upstream(2));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+    engine
+        .set_scope(vec![ScopeRule::include_host("127.0.0.1")])
+        .unwrap();
+
+    let (ok, err, completed) = run_single_attack(&engine, login_bruteforce_config(up, 3));
+    assert_eq!(ok, 1, "the request eventually succeeds after retries");
+    assert_eq!(err, 0, "transient failures are retried, not reported as errors");
+    assert_eq!(completed, 1);
+}
+
+/// Retries are bounded: a target that never recovers produces exactly one error
+/// result (not an infinite retry loop), and the attack terminates.
+#[test]
+fn intruder_retries_are_bounded_when_target_never_recovers() {
+    let helper = Runtime::new().unwrap();
+    let up = helper.block_on(spawn_flaky_upstream(usize::MAX));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(ProxyConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        ..ProxyConfig::default()
+    })
+    .unwrap();
+    engine
+        .set_scope(vec![ScopeRule::include_host("127.0.0.1")])
+        .unwrap();
+
+    let (ok, err, completed) = run_single_attack(&engine, login_bruteforce_config(up, 2));
+    assert_eq!(ok, 0);
+    assert_eq!(err, 1, "exhausted retries collapse to a single error result");
+    assert_eq!(completed, 1, "the attack terminates instead of looping");
 }
 
 // ---- active scanner e2e (reflecting mock = reflected XSS) ----
