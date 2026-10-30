@@ -176,6 +176,30 @@ const LIBS: &[LibDef] = &[
             summary: "sanitiser bypasses allowing XSS in older releases",
         }],
     },
+    LibDef {
+        name: "CKEditor 4",
+        patterns: &[
+            r"(?i)ckeditor[-./](\d+\.\d+\.\d+)(?:\.min)?\.js",
+            r"(?i)CKEditor (\d+\.\d+\.\d+)",
+        ],
+        vulns: &[Vuln {
+            fixed_in: "4.17.0",
+            severity: Medium,
+            summary: "cross-site scripting in the HTML parser and several plugins (CVE-2021-41164, CVE-2021-41165 and earlier)",
+        }],
+    },
+    LibDef {
+        name: "TinyMCE",
+        patterns: &[
+            r"(?i)tinymce[-./](\d+\.\d+\.\d+)(?:\.min)?\.js",
+            r"(?i)TinyMCE (\d+\.\d+\.\d+)",
+        ],
+        vulns: &[Vuln {
+            fixed_in: "5.10.0",
+            severity: Medium,
+            summary: "stored/DOM cross-site scripting via crafted content and link/media handling (CVE-2020-12648, CVE-2021-43214 and related)",
+        }],
+    },
 ];
 
 struct Compiled {
@@ -378,6 +402,12 @@ mod tests {
     fn does_not_flag_a_patched_version() {
         let body = r#"<script src="/jquery-3.7.1.min.js"></script>"#;
         assert!(run("/", body, "text/html").is_empty());
+    }
+
+    #[test]
+    fn flags_old_ckeditor_from_url() {
+        let hits = run("/vendor/ckeditor-4.5.11.min.js", "", "text/html");
+        assert!(hits.iter().any(|h| h.title.contains("CKEditor 4 4.5.11")));
     }
 
     #[test]
