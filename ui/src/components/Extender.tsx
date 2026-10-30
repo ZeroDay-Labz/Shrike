@@ -1,17 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import type { BappEntry, BappOutput, InstalledBapp, JvmStatus, PluginManifest, RunningBapp } from "../types";
+import type { BappEntry, BappOutput, InstalledBapp, JvmStatus, RunningBapp } from "../types";
 import { api } from "../api";
 import { ExtensionTab } from "./ExtensionTab";
 
-const SAMPLE = `{
-  "id": "com.example.header-logger",
-  "name": "Header Logger",
-  "version": "0.1.0",
-  "author": "you",
-  "description": "Logs an interesting response header.",
-  "permissions": ["read_traffic"],
-  "hooks": ["on_response"]
-}`;
+
 
 /**
  * The Addons hub: one clean side entry whose top tabs hold the extension catalog, the
@@ -42,7 +34,6 @@ export function Extender(props: {
         <div className="seg ext-tabs">
           <button className={sub === "store" ? "on" : ""} onClick={() => setSub("store")}>Extension catalog</button>
           <button className={sub === "installed" ? "on" : ""} onClick={() => setSub("installed")}>Installed</button>
-          <button className={sub === "native" ? "on" : ""} onClick={() => setSub("native")}>Native plugins</button>
           {props.extMeta.map((m) => (
             <button key={m.sha256} className={sub === m.sha256 ? "on" : ""}
               title={m.name ?? m.sha256} onClick={() => setSub(m.sha256)}>
@@ -59,7 +50,6 @@ export function Extender(props: {
           onOpenConsole={(sha) => setSub(sha)}
         />
       )}
-      {sub === "native" && <NativePlugins />}
       {sub.length === 64 && (
         <ExtensionTab
           meta={activeMeta}
@@ -333,78 +323,3 @@ function InstalledPanel(props: { onChanged: () => void; onOpenConsole: (sha: str
 /* Native plugin registry (foundation)                                        */
 /* -------------------------------------------------------------------------- */
 
-function NativePlugins() {
-  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
-  const [draft, setDraft] = useState("");
-  const [msg, setMsg] = useState("");
-  const [adding, setAdding] = useState(false);
-
-  useEffect(() => { api.pluginsList().then(setPlugins).catch((e) => setMsg(String(e))); }, []);
-
-  async function install() {
-    setMsg("");
-    let manifest: PluginManifest;
-    try {
-      const parsed = JSON.parse(draft);
-      if (!parsed.id || !parsed.name) throw new Error("manifest needs at least an id and a name");
-      manifest = { version: "", description: "", author: "", permissions: [], hooks: [], enabled: true, ...parsed };
-    } catch (e) { setMsg("Invalid manifest: " + String(e)); return; }
-    try { setPlugins(await api.pluginAdd(manifest)); setDraft(""); setAdding(false); }
-    catch (e) { setMsg("Rejected: " + String(e)); }
-  }
-  async function toggle(p: PluginManifest) {
-    try { setPlugins(await api.pluginSetEnabled(p.id, !p.enabled)); } catch (e) { setMsg(String(e)); }
-  }
-  async function remove(p: PluginManifest) {
-    try { setPlugins(await api.pluginRemove(p.id)); } catch (e) { setMsg(String(e)); }
-  }
-
-  return (
-    <>
-      <div className="ext-head">
-        <span className="mut">Shrike's own plugin API — install, enable and manage native plugins.</span>
-        <span className="spacer" />
-        <button className="btn start" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Install plugin"}</button>
-      </div>
-      <div className="warnbar">
-        Foundation: the registry, permission and hook model are live and persisted. The sandboxed runtime that
-        executes enabled plugins against traffic is the next milestone — installing records a manifest; it does
-        not yet run.
-      </div>
-      {adding && (
-        <div className="ext-add">
-          <div className="mut">Paste a plugin manifest (JSON):</div>
-          <textarea className="ext-ta" value={draft} spellCheck={false} placeholder={SAMPLE}
-            onChange={(e) => setDraft(e.target.value)} />
-          <div className="row">
-            <button className="link" onClick={() => setDraft(SAMPLE)}>use sample</button>
-            <span className="spacer" />
-            <button className="btn start" onClick={install}>Install</button>
-          </div>
-        </div>
-      )}
-      {msg && <div className="msg">{msg}</div>}
-      <div className="ext-list">
-        {plugins.length === 0 && <div className="hint">no native plugins installed yet</div>}
-        {plugins.map((p) => (
-          <div className={"ext-card" + (p.enabled ? "" : " off")} key={p.id}>
-            <div className="ext-card-top">
-              <label className="ext-on"><input type="checkbox" checked={p.enabled} onChange={() => toggle(p)} /></label>
-              <span className="ext-name">{p.name}</span>
-              {p.version && <span className="mut">v{p.version}</span>}
-              {p.author && <span className="mut">· {p.author}</span>}
-              <span className="spacer" />
-              <button className="link" onClick={() => remove(p)} title="remove">✕</button>
-            </div>
-            {p.description && <div className="ext-desc">{p.description}</div>}
-            <div className="ext-tags">
-              {p.permissions.map((perm) => <span className="ext-perm" key={perm}>{perm.replace("_", " ")}</span>)}
-              {p.hooks.map((h) => <span className="ext-hook" key={h}>{h.replace("_", " ")}</span>)}
-            </div>
-            <div className="mut ext-id">{p.id}</div>
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}

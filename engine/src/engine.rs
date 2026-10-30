@@ -1625,6 +1625,11 @@ impl Engine {
         self.store.clear()
     }
 
+    /// Remove all findings and annotations for this project (history is kept).
+    pub fn clear_findings(&self) -> Result<()> {
+        self.store.clear_findings()
+    }
+
     // --- native Extras (passive = auto, active = deliberate) ---
 
     /// The Extras catalogue with live enable state, for the UI.

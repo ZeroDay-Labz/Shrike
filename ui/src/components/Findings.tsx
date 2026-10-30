@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Confidence, Finding, FindingStatus, Severity } from "../types";
 import { SEVERITIES } from "../types";
 import { api, events } from "../api";
+import { confirmAction, toast } from "./Overlay";
 
 const CONFIDENCES: Confidence[] = ["tentative", "firm", "certain"];
 const STATUSES: FindingStatus[] = ["open", "confirmed", "false_positive", "resolved"];
@@ -61,6 +62,21 @@ export function Findings(props: { onShowTransaction?: (id: number) => void }) {
     } catch (e) { setMsg(String(e)); }
   }, []);
 
+  const clearAll = useCallback(async () => {
+    const ok = await confirmAction({
+      title: "Clear all findings?",
+      body: "Deletes every finding and transaction annotation in this project. History is kept. This can't be undone.",
+      confirmLabel: "Clear findings",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.findingsClear();
+      setItems([]); setSelId(undefined);
+      toast("Findings cleared", "success");
+    } catch (e) { toast(String(e), "error"); }
+  }, []);
+
   const remove = useCallback(async (id: number) => {
     try {
       await api.findingDelete(id);
@@ -103,6 +119,7 @@ export function Findings(props: { onShowTransaction?: (id: number) => void }) {
         <span className="spacer" />
         <button className="btn" onClick={() => exportReport("html")} disabled={!items.length}>Export HTML</button>
         <button className="btn" onClick={() => exportReport("json")} disabled={!items.length}>Export JSON</button>
+        <button className="btn danger" onClick={clearAll} disabled={!items.length} title="Delete all findings and annotations">Clear all</button>
         <button className="btn start" onClick={create}>New finding</button>
       </div>
       {msg && <div className="errbar">{msg}</div>}

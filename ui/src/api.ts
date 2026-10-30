@@ -20,6 +20,7 @@ export const api = {
   historyQueryCount: (query: string) => invoke<number>("history_query_count", { query }),
   historyGet: (id: number) => invoke<TransactionView | null>("history_get", { id }),
   historyClear: () => invoke<void>("history_clear"),
+  findingsClear: () => invoke<void>("findings_clear"),
   siteMap: () => invoke<SiteNode[]>("site_map"),
   trafficStats: () => invoke<TrafficStats>("traffic_stats"),
   crawlerStart: (seed: string) => invoke<void>("crawler_start", { seed }),

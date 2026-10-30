@@ -28,6 +28,12 @@ export function ExtensionTab(props: {
   const name = meta?.name || installed?.name || installed?.filename || "Extension";
   const registered = meta?.registered ?? installed?.registered ?? [];
   const hooks = registered.filter((r) => !r.startsWith("suiteTab:"));
+  // What the host actually delivers today: logging output and standalone Swing
+  // UI windows. Traffic/scan/menu handlers are recorded but not yet wired to the
+  // engine, so we label them honestly instead of implying they work.
+  const WIRED = /logging|output|print/i;
+  const wired = hooks.filter((h) => WIRED.test(h));
+  const notWired = hooks.filter((h) => !WIRED.test(h));
   const tabs = meta?.suite_tabs
     ?? registered.filter((r) => r.startsWith("suiteTab:")).map((r) => r.slice("suiteTab:".length));
 
@@ -65,9 +71,21 @@ export function ExtensionTab(props: {
           <div className="exttab-label">Registered</div>
           <div className="exttab-chips">
             {hooks.length === 0 && tabs.length === 0 && <span className="mut">nothing registered yet</span>}
-            {hooks.map((h) => <span className="ext-hook" key={h}>{h.replace(/^register/, "")}</span>)}
-            {tabs.map((t) => <span className="ext-perm" key={"t" + t}>tab: {t}</span>)}
+            {tabs.map((t) => <span className="ext-hook" key={"t" + t} title="Opens as a standalone window">UI tab: {t}</span>)}
+            {wired.map((h) => <span className="ext-hook" key={h} title="Active">{h.replace(/^register/, "")}</span>)}
+            {notWired.map((h) => (
+              <span className="ext-hook not-wired" key={h} title="Registered by the extension, but not yet connected to Shrike's traffic — coming with the extension bridge">
+                {h.replace(/^register/, "")}
+              </span>
+            ))}
           </div>
+          {notWired.length > 0 && (
+            <div className="exttab-note warn">
+              This extension loads and its UI/logging work, but the handlers above
+              ({notWired.length}) don't receive traffic yet — Shrike doesn't fully
+              run extension HTTP/scan/menu hooks. Full support is in progress.
+            </div>
+          )}
         </div>
       </div>
 

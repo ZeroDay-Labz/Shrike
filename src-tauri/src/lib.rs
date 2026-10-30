@@ -362,6 +362,11 @@ async fn history_clear(state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn findings_clear(state: State<'_, AppState>) -> CmdResult<()> {
+    off_main(&state, |e| e.clear_findings().map_err(err)).await
+}
+
+#[tauri::command]
 async fn site_map(state: State<'_, AppState>) -> CmdResult<Vec<SiteNode>> {
     off_main(&state, |e| e.site_map().map_err(err)).await
 }
@@ -1164,6 +1169,7 @@ pub fn run() {
             history_query_count,
             history_get,
             history_clear,
+            findings_clear,
             site_map,
             project_info,
             project_set_name,

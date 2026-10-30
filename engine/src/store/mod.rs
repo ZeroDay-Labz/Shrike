@@ -658,6 +658,13 @@ impl Store {
         Ok(())
     }
 
+    /// Remove all findings and annotations (the triage layer). History is kept.
+    pub fn clear_findings(&self) -> Result<()> {
+        let conn = self.read.lock().expect("store read lock");
+        conn.execute_batch("DELETE FROM findings; DELETE FROM annotations;")?;
+        Ok(())
+    }
+
     // --- Findings & annotations ---------------------------------------------
     //
     // These are low-frequency, user-initiated writes, so (like `prune_history`)
@@ -1558,6 +1565,42 @@ mod tests {
             Some("v2"),
             "persists across reopen"
         );
+    }
+
+    #[test]
+    fn clear_findings_removes_findings_and_annotations_but_keeps_history() {
+        use crate::findings::{Confidence, NewFinding, Severity};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("p.sqlite")).unwrap();
+        let mut sink = store.sink();
+        sink.handle(&TrafficEvent::Completed(Arc::new(txn(
+            1,
+            "a.example",
+            "GET",
+            200,
+            b"{}",
+        ))));
+        store.flush().unwrap();
+        store
+            .finding_create(NewFinding {
+                title: "x".into(),
+                severity: Severity::Low,
+                confidence: Confidence::Firm,
+                detail: String::new(),
+                host: None,
+                path: None,
+                transaction_ids: vec![1],
+            })
+            .unwrap();
+        store.annotation_set(1, Some("red".into()), None).unwrap();
+        assert_eq!(store.findings_list().unwrap().len(), 1);
+        assert_eq!(store.annotations_all().unwrap().len(), 1);
+
+        store.clear_findings().unwrap();
+        assert!(store.findings_list().unwrap().is_empty());
+        assert!(store.annotations_all().unwrap().is_empty());
+        // History is untouched.
+        assert_eq!(store.count(&HistoryFilter::default()).unwrap(), 1);
     }
 
     #[test]
