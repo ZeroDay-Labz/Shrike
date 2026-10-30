@@ -7,9 +7,11 @@
 pub mod active;
 pub mod js_libs;
 pub mod jwt_scan;
+pub mod param_miner;
 pub mod passive;
 
 pub use active::{ActiveScanConfig, ActiveScanEvent, run_active_scan};
+pub use param_miner::{ParamMinerConfig, run_param_discovery};
 pub use passive::PassiveScanner;
 
 use crate::findings::{Confidence, NewFinding, Severity};

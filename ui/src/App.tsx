@@ -336,6 +336,11 @@ export default function App() {
     catch (e) { setScanStatus(String(e)); setTimeout(() => setScanStatus(""), 6000); }
   }, []);
 
+  const discoverParams = useCallback(async (id: number) => {
+    try { await api.paramDiscoveryStart(id); setScanStatus("discovering parameters…"); }
+    catch (e) { setScanStatus(String(e)); setTimeout(() => setScanStatus(""), 6000); }
+  }, []);
+
   // Record a finding seeded from a captured transaction, then open Findings.
   const addFindingFromView = useCallback(async (v: TransactionView) => {
     const path = (() => {
@@ -360,8 +365,9 @@ export default function App() {
     { label: "Send to Comparer (B)", onClick: async () => { const v = await getView(); if (v) sendToComparer(v, "b"); } },
     { label: "Send to Decoder", onClick: async () => { const v = await getView(); if (v) sendToDecoder(v); } },
     { label: "Active scan this request", onClick: async () => { const v = await getView(); if (v) activeScan(v.request.id); } },
+    { label: "Discover hidden parameters", onClick: async () => { const v = await getView(); if (v) discoverParams(v.request.id); } },
     { label: "Record as finding", onClick: async () => { const v = await getView(); if (v) addFindingFromView(v); } },
-  ], [addRepeaterFromView, addToIntruder, sendToComparer, sendToDecoder, addFindingFromView, activeScan]);
+  ], [addRepeaterFromView, addToIntruder, sendToComparer, sendToDecoder, addFindingFromView, activeScan, discoverParams]);
 
   const addHostToScope = useCallback(async (host: string) => {
     const cur = await api.scopeGet();

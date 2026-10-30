@@ -241,6 +241,8 @@ pub struct Engine {
     crawl_stop: Mutex<Option<Arc<AtomicBool>>>,
     /// Cancellation flag for the active scan (one scan at a time).
     scan_stop: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cancellation flag for parameter discovery (one run at a time).
+    param_stop: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Engine {
@@ -304,6 +306,7 @@ impl Engine {
             extras,
             crawl_stop: Mutex::new(None),
             scan_stop: Mutex::new(None),
+            param_stop: Mutex::new(None),
         });
         Ok(engine)
     }
@@ -577,6 +580,74 @@ impl Engine {
     /// Cancel the active scan, if any.
     pub fn active_scan_stop(&self) {
         if let Some(stop) = self.scan_stop.lock().expect("scan lock").take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Discover hidden parameters on a captured request: brute-force a wordlist
+    /// of parameter names and file a finding for each the server reacts to.
+    /// Scope-gated exactly like the active scanner, since it sends traffic.
+    pub fn param_discovery_start(
+        &self,
+        transaction_id: u64,
+        sink: Arc<dyn Fn(crate::scanner::ActiveScanEvent) + Send + Sync>,
+    ) -> Result<()> {
+        let view = self
+            .store
+            .history_get(transaction_id)?
+            .ok_or_else(|| anyhow!("no such transaction"))?;
+        let r = &view.request;
+        let path = r.target.split('?').next().unwrap_or(&r.target).to_string();
+        {
+            let scope = self.scope.read().expect("scope lock");
+            if scope.is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty — add the target host to the engagement scope before \
+                     discovering parameters"
+                ));
+            }
+            if !scope.in_scope(&r.service, &path) {
+                return Err(anyhow!(
+                    "that request is out of the engagement scope; parameter discovery is refused"
+                ));
+            }
+        }
+        let spec = RequestSpec {
+            service: r.service.clone(),
+            method: r.method.clone(),
+            target: r.target.clone(),
+            headers: r.headers.clone(),
+            body: r.body.text.clone().unwrap_or_default(),
+        };
+        let host = r.service.host.clone();
+
+        self.param_discovery_stop();
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.param_stop.lock().expect("param lock") = Some(Arc::clone(&stop));
+        let config = crate::scanner::ParamMinerConfig {
+            concurrency: self.config().active_scan_concurrency,
+        };
+        let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
+        let store = Arc::clone(&self.store);
+        let bus = self.ingest.clone();
+        self.runtime.spawn(async move {
+            let hits = crate::scanner::run_param_discovery(spec, sender, stop, config, sink).await;
+            for hit in hits {
+                let key = hit.dedup_key(&host, &path);
+                let nf = hit.into_finding(&host, &path, transaction_id);
+                match store.finding_create_deduped(nf, &key) {
+                    Ok(Some(f)) => bus.emit(TrafficEvent::FindingAdded(Arc::new(f))),
+                    Ok(None) => {}
+                    Err(e) => warn!(error = %e, "param-discovery finding insert failed"),
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Cancel parameter discovery, if any.
+    pub fn param_discovery_stop(&self) {
+        if let Some(stop) = self.param_stop.lock().expect("param lock").take() {
             stop.store(true, Ordering::Relaxed);
         }
     }

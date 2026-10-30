@@ -414,6 +414,28 @@ fn active_scan_stop(state: State<AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn param_discovery_start(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    transaction_id: u64,
+) -> CmdResult<()> {
+    let sink: std::sync::Arc<dyn Fn(shrike_engine::scanner::ActiveScanEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            let _ = app.emit("scan-progress", ev);
+        });
+    off_main(&state, move |e| {
+        e.param_discovery_start(transaction_id, sink).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+fn param_discovery_stop(state: State<AppState>) -> CmdResult<()> {
+    state.engine.param_discovery_stop();
+    Ok(())
+}
+
+#[tauri::command]
 async fn traffic_stats(state: State<'_, AppState>) -> CmdResult<TrafficStats> {
     off_main(&state, |e| e.traffic_stats().map_err(err)).await
 }
@@ -1201,6 +1223,8 @@ pub fn run() {
             crawler_stop,
             active_scan_start,
             active_scan_stop,
+            param_discovery_start,
+            param_discovery_stop,
             findings_list,
             finding_create,
             finding_update,
