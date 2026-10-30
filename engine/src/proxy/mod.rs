@@ -42,6 +42,7 @@ pub async fn serve(
     interceptor: Arc<Interceptor>,
     match_replace: Arc<RwLock<MatchReplace>>,
     ids: TransactionIds,
+    bapp: Arc<crate::jvm::BappBridge>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -57,6 +58,7 @@ pub async fn serve(
         interceptor,
         match_replace,
         ids,
+        bapp,
     );
 
     let local = listener.local_addr().context("reading listener address")?;

@@ -21,7 +21,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::JvmRuntime;
+use tracing::warn;
+
+use super::{JvmRuntime, RunningBapp};
 
 /// Which leg of a transaction a frame carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +193,83 @@ pub fn process_chain(
         }
     }
     HandlerAction::Continue(cur)
+}
+
+/// Routes live proxy traffic through the running extensions' HTTP handlers.
+///
+/// Holds shared handles to the engine's running-host and state maps, so it
+/// always reflects the extensions running right now (started or stopped live,
+/// with no proxy restart). Constructed once and shared with the proxy handler.
+pub struct BappBridge {
+    hosts: Arc<Mutex<HashMap<String, Arc<ServeHost>>>>,
+    state: Arc<Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>>,
+    timeout: Duration,
+}
+
+impl BappBridge {
+    pub fn new(
+        hosts: Arc<Mutex<HashMap<String, Arc<ServeHost>>>>,
+        state: Arc<Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            hosts,
+            state,
+            timeout,
+        }
+    }
+
+    /// A bridge with no extensions — for proxy callers that don't run BApps
+    /// (the CLI, tests). `active()` is always false, so traffic is never touched.
+    pub fn disabled() -> Self {
+        Self::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Duration::from_secs(10),
+        )
+    }
+
+    /// Running hosts that registered an HTTP handler, in a stable (sha-sorted)
+    /// order so the chain is deterministic across requests.
+    fn chain(&self) -> Vec<Arc<ServeHost>> {
+        let state = self.state.lock().expect("bapp state lock");
+        let hosts = self.hosts.lock().expect("bapp hosts lock");
+        let mut shas: Vec<&String> = hosts.keys().collect();
+        shas.sort();
+        shas.into_iter()
+            .filter(|sha| {
+                state
+                    .get(*sha)
+                    .map(|s| {
+                        s.lock()
+                            .expect("running bapp lock")
+                            .registered
+                            .iter()
+                            .any(|r| r == "registerHttpHandler")
+                    })
+                    .unwrap_or(false)
+            })
+            .filter_map(|sha| hosts.get(sha).map(Arc::clone))
+            .collect()
+    }
+
+    /// Whether any running extension will process traffic. Cheap gate the proxy
+    /// checks before doing any work.
+    pub fn active(&self) -> bool {
+        !self.chain().is_empty()
+    }
+
+    /// Run a message through the extension chain; fail-open on any error so a
+    /// wedged extension never blocks or corrupts traffic.
+    pub fn process(&self, phase: Phase, target: Target<'_>, raw: &[u8]) -> HandlerAction {
+        let chain = self.chain();
+        if chain.is_empty() {
+            return HandlerAction::Continue(raw.to_vec());
+        }
+        process_chain(&chain, phase, target, raw, self.timeout, |e| {
+            warn!(error = e, "extension handler failed; forwarding unchanged");
+        })
+    }
 }
 
 fn route_result(pending: &Mutex<HashMap<u64, Sender<Res>>>, rest: &str) {

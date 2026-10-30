@@ -7,7 +7,7 @@
 //! the classpath (scaffolded).
 
 mod serve;
-pub use serve::{HandlerAction, Phase, ServeHost, Target, process_chain};
+pub use serve::{BappBridge, HandlerAction, Phase, ServeHost, Target, process_chain};
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};

@@ -215,11 +215,12 @@ pub struct Engine {
     browser_exit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
     /// Bundled JVM host jars (set by the GUI once resolved from app resources).
     jvm_resources: Mutex<Option<JvmResources>>,
-    /// Running Java BApp host processes, keyed by the extension's SHA-256.
-    bapp_procs: Mutex<HashMap<String, std::process::Child>>,
+    /// Running Java BApp serve-hosts, keyed by the extension's SHA-256. Shared
+    /// (via `Arc`) with the proxy's [`jvm::BappBridge`] so it sees live changes.
+    bapp_hosts: Arc<Mutex<HashMap<String, Arc<jvm::ServeHost>>>>,
     /// Live console state (name, registrations, captured output) for each running
-    /// BApp, updated by its host-process reader thread.
-    bapp_state: Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>,
+    /// BApp, updated by its host-process reader thread. Shared with the bridge.
+    bapp_state: Arc<Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>>,
     /// HTTP sender for manual tools (Repeater); rebuilt when TLS config changes.
     sender: RwLock<Arc<Sender>>,
     /// Cancellation flags for running Intruder attacks, keyed by attack id.
@@ -291,8 +292,8 @@ impl Engine {
             plugins,
             browser_exit_hook: Mutex::new(None),
             jvm_resources: Mutex::new(None),
-            bapp_procs: Mutex::new(HashMap::new()),
-            bapp_state: Mutex::new(HashMap::new()),
+            bapp_hosts: Arc::new(Mutex::new(HashMap::new())),
+            bapp_state: Arc::new(Mutex::new(HashMap::new())),
             sender: RwLock::new(sender),
             attacks: Mutex::new(HashMap::new()),
             next_attack_id: AtomicU64::new(1),
@@ -659,6 +660,7 @@ impl Engine {
         let interceptor = Arc::clone(&self.interceptor);
         let match_replace = Arc::clone(&self.match_replace);
         let ids = self.store.transaction_ids();
+        let bapp = self.bapp_bridge();
 
         let task = self.runtime.spawn(async move {
             // The ingest bus is owned by the engine and is NOT drained here — it
@@ -672,6 +674,7 @@ impl Engine {
                 interceptor,
                 match_replace,
                 ids,
+                bapp,
                 shutdown,
             )
             .await
@@ -1454,14 +1457,14 @@ impl Engine {
         sha256: &str,
         sink: Arc<dyn Fn(BappOutput) + Send + Sync>,
     ) -> Result<()> {
-        // reap any finished process holding this slot
+        // reap any finished host holding this slot
         {
-            let mut procs = self.bapp_procs.lock().expect("bapp procs lock");
-            if let Some(child) = procs.get_mut(sha256) {
-                if matches!(child.try_wait(), Ok(None)) {
+            let mut hosts = self.bapp_hosts.lock().expect("bapp hosts lock");
+            if let Some(host) = hosts.get(sha256) {
+                if host.is_alive() {
                     return Ok(()); // still running
                 }
-                procs.remove(sha256);
+                hosts.remove(sha256);
             }
         }
         let record = self
@@ -1495,27 +1498,28 @@ impl Engine {
             .insert(sha256.to_string(), Arc::clone(&state));
 
         let sha_owned = sha256.to_string();
-        let child = jvm::spawn_streaming(&rt, std::path::Path::new(&record.path), move |line| {
+        // Serve mode: the host keeps any Swing UI alive AND processes traffic
+        // through the extension's handlers over the framed stdin/stdout protocol.
+        let host = jvm::ServeHost::spawn(&rt, std::path::Path::new(&record.path), move |line| {
             let ev = ingest_host_line(&state, &sha_owned, &line);
             sink(ev);
         })?;
-        self.bapp_procs
+        self.bapp_hosts
             .lock()
-            .expect("bapp procs lock")
-            .insert(sha256.to_string(), child);
+            .expect("bapp hosts lock")
+            .insert(sha256.to_string(), host);
         info!(sha = sha256, "BApp running");
         Ok(())
     }
 
     pub fn bapp_stop(&self, sha256: &str) -> Result<()> {
-        if let Some(mut child) = self
-            .bapp_procs
+        if let Some(host) = self
+            .bapp_hosts
             .lock()
-            .expect("bapp procs lock")
+            .expect("bapp hosts lock")
             .remove(sha256)
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            host.kill();
         }
         self.bapp_state
             .lock()
@@ -1524,17 +1528,27 @@ impl Engine {
         Ok(())
     }
 
-    /// SHA-256s of BApps whose host process is still alive (reaps exited ones).
+    /// SHA-256s of BApps whose serve-host is still alive (reaps exited ones).
     pub fn bapp_running(&self) -> Vec<String> {
-        let mut procs = self.bapp_procs.lock().expect("bapp procs lock");
-        procs.retain(|_, child| matches!(child.try_wait(), Ok(None)));
-        let alive: Vec<String> = procs.keys().cloned().collect();
-        drop(procs);
+        let mut hosts = self.bapp_hosts.lock().expect("bapp hosts lock");
+        hosts.retain(|_, host| host.is_alive());
+        let alive: Vec<String> = hosts.keys().cloned().collect();
+        drop(hosts);
         self.bapp_state
             .lock()
             .expect("bapp state lock")
             .retain(|sha, _| alive.contains(sha));
         alive
+    }
+
+    /// A bridge that routes live proxy traffic through the running extensions'
+    /// HTTP handlers. Shares the host/state maps, so it tracks live start/stop.
+    pub fn bapp_bridge(&self) -> Arc<jvm::BappBridge> {
+        Arc::new(jvm::BappBridge::new(
+            Arc::clone(&self.bapp_hosts),
+            Arc::clone(&self.bapp_state),
+            std::time::Duration::from_millis(self.config().request_timeout_ms),
+        ))
     }
 
     /// Live console state for every running BApp (name, registrations, suite-tab

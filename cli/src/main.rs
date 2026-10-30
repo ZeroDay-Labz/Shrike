@@ -268,8 +268,20 @@ fn run(data_dir: PathBuf, args: RunArgs) -> Result<()> {
             Arc::new(std::sync::RwLock::new(shrike_engine::match_replace::MatchReplace::empty()));
         // No history store here, so ids only need to be unique for this run.
         let ids = shrike_engine::core::TransactionIds::starting_after(0);
-        proxy::serve(listener, config, ca, bus, scope, interceptor, match_replace, ids, shutdown)
-            .await?;
+        let bapp = Arc::new(shrike_engine::jvm::BappBridge::disabled());
+        proxy::serve(
+            listener,
+            config,
+            ca,
+            bus,
+            scope,
+            interceptor,
+            match_replace,
+            ids,
+            bapp,
+            shutdown,
+        )
+        .await?;
         // all handler clones are gone once serve() returns; let the bus drain.
         let _ = bus_task.await;
         Ok::<(), anyhow::Error>(())

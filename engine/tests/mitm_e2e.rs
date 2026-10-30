@@ -126,6 +126,7 @@ async fn spawn_proxy(upstream_tls: UpstreamTlsMode) -> RunningProxy {
                 shrike_engine::match_replace::MatchReplace::empty(),
             )),
             shrike_engine::core::TransactionIds::starting_after(0),
+            Arc::new(shrike_engine::jvm::BappBridge::disabled()),
             async move {
                 let _ = stop_rx.await;
             },

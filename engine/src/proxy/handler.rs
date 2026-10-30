@@ -52,6 +52,8 @@ struct Shared {
     /// The project-wide id sequence (shared with the store), so a proxy
     /// restart continues numbering instead of reusing stored ids.
     ids: TransactionIds,
+    /// Routes in-scope traffic through running extensions' HTTP handlers.
+    bapp: Arc<crate::jvm::BappBridge>,
 }
 
 struct Pending {
@@ -69,6 +71,7 @@ pub struct TrafficHandler {
 }
 
 impl TrafficHandler {
+    #[allow(clippy::too_many_arguments)] // pure wiring of the shared proxy deps
     pub fn new(
         bus: EventBus,
         ca: Arc<CaManager>,
@@ -77,6 +80,7 @@ impl TrafficHandler {
         interceptor: Arc<Interceptor>,
         match_replace: Arc<RwLock<MatchReplace>>,
         ids: TransactionIds,
+        bapp: Arc<crate::jvm::BappBridge>,
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -87,6 +91,7 @@ impl TrafficHandler {
                 interceptor,
                 match_replace,
                 ids,
+                bapp,
             }),
             pending: None,
             pending_highlight: None,
@@ -502,6 +507,188 @@ fn apply_match_replace_response(
     body
 }
 
+/// Outcome of running a request through the extension chain.
+enum ExtReq {
+    Continue(Bytes),
+    Drop,
+}
+
+/// Split raw HTTP bytes into (head, body) at the blank line, tolerating bare LF.
+fn split_head_body(raw: &[u8]) -> (&[u8], &[u8]) {
+    if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        return (&raw[..i], &raw[i + 4..]);
+    }
+    if let Some(i) = raw.windows(2).position(|w| w == b"\n\n") {
+        return (&raw[..i], &raw[i + 2..]);
+    }
+    (raw, &[])
+}
+
+/// Parse extension-rewritten request bytes into an [`EditedRequest`], reusing the
+/// same apply path as an intercept edit. Returns `None` if the head is malformed.
+fn parse_edited_request(raw: &[u8]) -> Option<EditedRequest> {
+    let (head, body) = split_head_body(raw);
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.split('\n').map(|l| l.trim_end_matches('\r'));
+    let start = lines.next()?;
+    let mut t = start.split_whitespace();
+    let method = t.next()?.to_string();
+    let target = t.next()?.to_string();
+    let mut headers = Vec::new();
+    for ln in lines {
+        if ln.is_empty() {
+            continue;
+        }
+        let c = ln.find(':')?;
+        headers.push(Header {
+            name: ln[..c].trim().to_string(),
+            value: ln[c + 1..].trim().to_string(),
+        });
+    }
+    Some(EditedRequest {
+        method,
+        target,
+        headers,
+        body: String::from_utf8_lossy(body).into_owned(),
+    })
+}
+
+/// Apply extension-rewritten response bytes onto `parts`, returning the new body.
+fn apply_raw_to_response(parts: &mut hyper::http::response::Parts, raw: &[u8]) -> Bytes {
+    let (head, body) = split_head_body(raw);
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.split('\n').map(|l| l.trim_end_matches('\r'));
+    if let Some(status) = lines.next().and_then(|start| {
+        // "HTTP/1.1 <code> <reason>"
+        start
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse::<u16>().ok())
+            .and_then(|c| StatusCode::from_u16(c).ok())
+    }) {
+        parts.status = status;
+    }
+    let mut headers = Vec::new();
+    for ln in lines {
+        if ln.is_empty() {
+            continue;
+        }
+        if let Some(c) = ln.find(':') {
+            headers.push(Header {
+                name: ln[..c].trim().to_string(),
+                value: ln[c + 1..].trim().to_string(),
+            });
+        }
+    }
+    let body = Bytes::copy_from_slice(body);
+    parts.headers = rebuild_header_map(headers, body.len());
+    body
+}
+
+fn extension_drop_response() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from("shrike: request dropped by an extension\n"))
+        .expect("static response")
+}
+
+impl TrafficHandler {
+    /// Run a buffered request through the enabled extensions' HTTP handlers. The
+    /// round-trip to the JVM is blocking, so it runs on a blocking task; a failure
+    /// or timeout falls open (forwards unchanged) inside the bridge.
+    async fn run_request_extensions(
+        &self,
+        id: u64,
+        client_addr: std::net::SocketAddr,
+        parts: &mut hyper::http::request::Parts,
+        body: Bytes,
+    ) -> ExtReq {
+        if !self.shared.bapp.active() {
+            return ExtReq::Continue(body);
+        }
+        let Some(tmp) =
+            CapturedRequest::from_parts(id, client_addr, parts, body.clone(), body.len(), true)
+        else {
+            return ExtReq::Continue(body);
+        };
+        let raw = tmp.to_raw();
+        let service = tmp.service;
+        let bridge = Arc::clone(&self.shared.bapp);
+        let raw_in = raw.clone();
+        let action = tokio::task::spawn_blocking(move || {
+            bridge.process(
+                crate::jvm::Phase::Request,
+                crate::jvm::Target {
+                    host: &service.host,
+                    port: service.port,
+                    secure: service.secure,
+                },
+                &raw_in,
+            )
+        })
+        .await
+        .unwrap_or_else(|_| crate::jvm::HandlerAction::Continue(raw.clone()));
+
+        match action {
+            crate::jvm::HandlerAction::Drop => ExtReq::Drop,
+            crate::jvm::HandlerAction::Continue(modified) if modified != raw => {
+                match parse_edited_request(&modified) {
+                    Some(edit) => match apply_edit(parts, &edit) {
+                        Ok(b) => ExtReq::Continue(b),
+                        Err(err) => {
+                            warn!(%err, "extension-edited request could not be applied; forwarding unchanged");
+                            ExtReq::Continue(body)
+                        }
+                    },
+                    None => ExtReq::Continue(body),
+                }
+            }
+            _ => ExtReq::Continue(body),
+        }
+    }
+
+    /// Run a buffered response through the enabled extensions' HTTP handlers. The
+    /// target service is the one the matching request was sent to.
+    async fn run_response_extensions(
+        &self,
+        parts: &mut hyper::http::response::Parts,
+        body: Bytes,
+    ) -> Bytes {
+        if !self.shared.bapp.active() {
+            return body;
+        }
+        let Some(pending) = self.pending.as_ref() else {
+            return body;
+        };
+        let service = pending.request.service.clone();
+        let tmp = CapturedResponse::from_parts(parts, body.clone(), body.len(), true);
+        let raw = tmp.to_raw();
+        let bridge = Arc::clone(&self.shared.bapp);
+        let raw_in = raw.clone();
+        let action = tokio::task::spawn_blocking(move || {
+            bridge.process(
+                crate::jvm::Phase::Response,
+                crate::jvm::Target {
+                    host: &service.host,
+                    port: service.port,
+                    secure: service.secure,
+                },
+                &raw_in,
+            )
+        })
+        .await
+        .unwrap_or_else(|_| crate::jvm::HandlerAction::Continue(raw.clone()));
+
+        match action {
+            crate::jvm::HandlerAction::Continue(modified) if modified != raw => {
+                apply_raw_to_response(parts, &modified)
+            }
+            _ => body,
+        }
+    }
+}
+
 impl HttpHandler for TrafficHandler {
     async fn handle_request(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
         if landing::is_landing_request(&req) {
@@ -607,6 +794,7 @@ impl HttpHandler for TrafficHandler {
         }
 
         self.forward_request(id, ctx.client_addr, parts, forward, captured)
+            .await
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
@@ -633,48 +821,59 @@ impl HttpHandler for TrafficHandler {
                 len,
                 complete,
             }) => {
-                let mr = self
-                    .shared
-                    .match_replace
-                    .read()
-                    .expect("match_replace lock");
+                let _ = complete;
+                let active = {
+                    self.shared
+                        .match_replace
+                        .read()
+                        .expect("match_replace lock")
+                        .has_active()
+                };
                 match forward {
-                    Forward::Complete(forward) if mr.has_active() => {
+                    Forward::Complete(forward) => {
                         let mut parts = parts;
-                        let body = apply_match_replace_response(&mr, &mut parts, forward);
-                        drop(mr);
+                        let mut body = forward;
+                        if active {
+                            let mr = self
+                                .shared
+                                .match_replace
+                                .read()
+                                .expect("match_replace lock");
+                            body = apply_match_replace_response(&mr, &mut parts, body);
+                        }
+                        // Extension HTTP handlers run on the post-match&replace response.
+                        body = self.run_response_extensions(&mut parts, body).await;
                         let (retained, complete) = retain(&body, max);
                         let captured =
                             CapturedResponse::from_parts(&parts, retained, body.len(), complete);
                         self.complete(Some(captured), None);
                         Response::from_parts(parts, Body::from(body))
                     }
-                    Forward::Streaming(forward) if mr.has_active() => {
+                    Forward::Streaming(forward) => {
                         // Too large to rewrite: header rules still apply, the body
                         // is forwarded exactly as received.
                         let mut parts = parts;
-                        if mr.has_active_for(RulePart::ResponseBody) {
-                            warn!(
-                                "response body exceeds the proxy buffer ceiling; body match & \
-                                 replace rules were not applied to it"
+                        if active {
+                            let mr = self
+                                .shared
+                                .match_replace
+                                .read()
+                                .expect("match_replace lock");
+                            if mr.has_active_for(RulePart::ResponseBody) {
+                                warn!(
+                                    "response body exceeds the proxy buffer ceiling; body match & \
+                                     replace rules were not applied to it"
+                                );
+                            }
+                            apply_header_rules_keep_framing(
+                                &mr,
+                                RulePart::ResponseHeader,
+                                &mut parts.headers,
                             );
                         }
-                        apply_header_rules_keep_framing(
-                            &mr,
-                            RulePart::ResponseHeader,
-                            &mut parts.headers,
-                        );
-                        drop(mr);
                         let captured = CapturedResponse::from_parts(&parts, retained, len, false);
                         self.complete(Some(captured), None);
                         Response::from_parts(parts, forward)
-                    }
-                    forward => {
-                        drop(mr);
-                        let captured =
-                            CapturedResponse::from_parts(&parts, retained, len, complete);
-                        self.complete(Some(captured), None);
-                        Response::from_parts(parts, forward.into_body())
                     }
                 }
             }
@@ -802,6 +1001,7 @@ impl TrafficHandler {
             }
             Decision::Forward(None) => {
                 self.forward_request(id, ctx.client_addr, parts, forward, captured)
+                    .await
             }
             // The body shown for editing was decoded as text and may be only the
             // first part of the body. Leave the body alone unless the user
@@ -811,6 +1011,7 @@ impl TrafficHandler {
                     warn!(%err, "could not apply intercept edit; forwarding original");
                 }
                 self.forward_request(id, ctx.client_addr, parts, forward, captured)
+                    .await
             }
             // A body edit made on a partial copy would forward a truncated body.
             Decision::Forward(Some(_)) if !captured.body_complete => {
@@ -836,16 +1037,20 @@ impl TrafficHandler {
             }
             Decision::Forward(Some(edit)) => match apply_edit(&mut parts, &edit) {
                 // Match & replace runs on top of the user's edit (user edits win).
-                Ok(body) => self.forward_request(
-                    id,
-                    ctx.client_addr,
-                    parts,
-                    Forward::Complete(body),
-                    captured,
-                ),
+                Ok(body) => {
+                    self.forward_request(
+                        id,
+                        ctx.client_addr,
+                        parts,
+                        Forward::Complete(body),
+                        captured,
+                    )
+                    .await
+                }
                 Err(err) => {
                     warn!(%err, "could not apply intercept edit; forwarding original");
                     self.forward_request(id, ctx.client_addr, parts, forward, captured)
+                        .await
                 }
             },
         }
@@ -853,7 +1058,7 @@ impl TrafficHandler {
 
     /// Apply match & replace (when any rule is active), record the request as it
     /// is actually being sent, and forward it.
-    fn forward_request(
+    async fn forward_request(
         &mut self,
         id: u64,
         client_addr: std::net::SocketAddr,
@@ -862,12 +1067,13 @@ impl TrafficHandler {
         captured: CapturedRequest,
     ) -> RequestOrResponse {
         let max = self.shared.config.max_capture_bytes;
-        let mr = self
-            .shared
-            .match_replace
-            .read()
-            .expect("match_replace lock");
-        let active = mr.has_active();
+        let active = {
+            self.shared
+                .match_replace
+                .read()
+                .expect("match_replace lock")
+                .has_active()
+        };
         // The recorded request is always rebuilt from the FINAL parts and body —
         // the ones actually sent — so history reflects intercept edits and match
         // & replace exactly, never the pre-edit capture. `captured` is only a
@@ -875,9 +1081,25 @@ impl TrafficHandler {
         match forward {
             Forward::Complete(mut body) => {
                 if active {
+                    let mr = self
+                        .shared
+                        .match_replace
+                        .read()
+                        .expect("match_replace lock");
                     body = apply_match_replace_request(&mr, &mut parts, body);
                 }
-                drop(mr);
+                // Extension HTTP handlers run on the post-match&replace request.
+                match self
+                    .run_request_extensions(id, client_addr, &mut parts, body)
+                    .await
+                {
+                    ExtReq::Continue(b) => body = b,
+                    ExtReq::Drop => {
+                        self.remember(captured);
+                        self.complete(None, Some("dropped by an extension".into()));
+                        return extension_drop_response().into();
+                    }
+                }
                 let (retained, complete) = retain(&body, max);
                 let rec = CapturedRequest::from_parts(
                     id,
@@ -894,6 +1116,11 @@ impl TrafficHandler {
                 // Too large to rewrite: header rules still apply, the body is
                 // forwarded exactly as received (only the captured prefix is kept).
                 if active {
+                    let mr = self
+                        .shared
+                        .match_replace
+                        .read()
+                        .expect("match_replace lock");
                     if mr.has_active_for(RulePart::RequestBody) {
                         warn!(
                             uri = %parts.uri,
@@ -907,7 +1134,6 @@ impl TrafficHandler {
                         &mut parts.headers,
                     );
                 }
-                drop(mr);
                 let rec = CapturedRequest::from_parts(
                     id,
                     client_addr,
