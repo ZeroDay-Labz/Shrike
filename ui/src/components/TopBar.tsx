@@ -60,9 +60,11 @@ export function TopBar(props: {
   async function saveCopy() {
     try {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const path = (props.dataDir ? props.dataDir + "/" : "") + "backups/shrike-" + ts + ".sqlite";
-      toast("Project copy saved to " + await api.projectBackup(path), "success");
-    } catch (e) { toast("Backup failed: " + String(e), "error"); }
+      // .shrike is Shrike's project file: a consistent snapshot of the project
+      // database (history, findings, annotations, scope and per-tool UI state).
+      const path = (props.dataDir ? props.dataDir + "/" : "") + "projects/shrike-" + ts + ".shrike";
+      toast("Project saved to " + await api.projectBackup(path), "success");
+    } catch (e) { toast("Save failed: " + String(e), "error"); }
   }
 
   function openMenu() {
@@ -71,7 +73,7 @@ export function TopBar(props: {
   }
 
   const menuItems: MenuItem[] = [
-    { label: "Save a copy of the project", onClick: saveCopy },
+    { label: "Save project as .shrike", onClick: saveCopy },
     {
       label: ca ? `Export CA certificate · ${ca.fingerprint.slice(0, 11)}…` : "Export CA certificate",
       onClick: exportCa, disabled: !ca,
