@@ -68,8 +68,9 @@ pub struct ServeHost {
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     pending: Arc<Mutex<HashMap<u64, Sender<Res>>>>,
-    /// Waiters for @MENURES / @FIRED replies (context-menu bridge), keyed by id.
-    /// The payload is the raw field after the id (base64 JSON, or a fire status).
+    /// Waiters for @MENURES / @FIRED / @ISSUES replies (the context-menu and
+    /// scanner bridges), keyed by id. The payload is the raw field after the id
+    /// (base64 JSON, or a fire status).
     menu_pending: Arc<Mutex<HashMap<u64, Sender<String>>>>,
     next_id: AtomicU64,
 }
@@ -113,6 +114,8 @@ impl ServeHost {
                 } else if let Some(rest) = line.strip_prefix("@MENURES\t") {
                     route_menu(&menu_pending_r, rest);
                 } else if let Some(rest) = line.strip_prefix("@FIRED\t") {
+                    route_menu(&menu_pending_r, rest);
+                } else if let Some(rest) = line.strip_prefix("@ISSUES\t") {
                     route_menu(&menu_pending_r, rest);
                 } else {
                     on_line(line);
@@ -190,6 +193,35 @@ impl ServeHost {
             if target.secure { 1 } else { 0 },
             B64.encode(request),
             response.map(|r| B64.encode(r)).unwrap_or_default(),
+        );
+        let payload = self.menu_round_trip(id, &frame, timeout)?;
+        let json = B64
+            .decode(payload.trim())
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_else(|| "[]".to_string());
+        Ok(json)
+    }
+
+    /// Run the extension's passive scan checks (Montoya `ScanCheck` / legacy
+    /// `IScannerCheck`) over one captured request/response. Returns the JSON array
+    /// `[{"name","detail","severity","confidence","url"}]` the Java host produced
+    /// (decoded from its base64 reply).
+    pub fn scan_passive(
+        &self,
+        target: Target<'_>,
+        request: &[u8],
+        response: &[u8],
+        timeout: Duration,
+    ) -> Result<String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = format!(
+            "@SCAN\t{id}\t{}\t{}\t{}\t{}\t{}\n",
+            target.host,
+            target.port,
+            if target.secure { 1 } else { 0 },
+            B64.encode(request),
+            B64.encode(response),
         );
         let payload = self.menu_round_trip(id, &frame, timeout)?;
         let json = B64

@@ -567,6 +567,12 @@ final class MontoyaObjects {
                 case "cookieParameter":
                     return new Param(String.valueOf(args[0]), String.valueOf(args[1]), HttpParameterType.COOKIE);
 
+                // Scanner issue builders: a ScanCheck constructs its findings
+                // through these, so they must preserve the values (a universal
+                // proxy would drop them and report an empty audit result).
+                case "auditIssue": return makeAuditIssue(method.getReturnType(), args);
+                case "auditResult": return makeAuditResult(method.getReturnType(), args);
+
                 // Handler action builders: continueWith/drop delegate here.
                 case "requestResult":
                     return action(method.getReturnType(), requestArg(args), null, RequestAction.CONTINUE, annFrom(args));
@@ -647,6 +653,66 @@ final class MontoyaObjects {
             if (args.length == 1) return new Ann(String.valueOf(args[0]), null);
             return new Ann(String.valueOf(args[0]), (HighlightColor) args[1]);
         }
+
+        /**
+         * A real AuditIssue holder. Arg order follows the published factory
+         * method: name, detail, remediation, baseUrl, severity, confidence,
+         * background, remediationBackground, typicalSeverity, requestResponses.
+         */
+        private Object makeAuditIssue(Class<?> iface, Object[] args) {
+            final String name = args.length > 0 && args[0] != null ? String.valueOf(args[0]) : "";
+            final String detail = args.length > 1 && args[1] != null ? String.valueOf(args[1]) : "";
+            final String remediation = args.length > 2 && args[2] != null ? String.valueOf(args[2]) : "";
+            final String baseUrl = args.length > 3 && args[3] != null ? String.valueOf(args[3]) : "";
+            final Object severity = args.length > 4 ? args[4] : null;
+            final Object confidence = args.length > 5 ? args[5] : null;
+            final List<Object> rrs = toObjectList(args.length > 9 ? args[9] : null);
+            InvocationHandler h = (proxy, m, a) -> {
+                switch (m.getName()) {
+                    case "name": return name;
+                    case "detail": return detail;
+                    case "remediation": return remediation;
+                    case "baseUrl": return baseUrl;
+                    case "severity": return severity != null ? severity : defaultReturn(m.getReturnType());
+                    case "confidence": return confidence != null ? confidence : defaultReturn(m.getReturnType());
+                    case "requestResponses": return new ArrayList<>(rrs);
+                    case "collaboratorInteractions": return new ArrayList<>();
+                    case "equals": return proxy == (a == null ? null : a[0]);
+                    case "hashCode": return System.identityHashCode(proxy);
+                    case "toString": return name;
+                    default: return defaultReturn(m.getReturnType());
+                }
+            };
+            return Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface}, h);
+        }
+
+        /** A real AuditResult holder whose auditIssues() returns the given issues. */
+        private Object makeAuditResult(Class<?> iface, Object[] args) {
+            final List<Object> issues = toObjectList(args == null || args.length == 0 ? null : args[0]);
+            InvocationHandler h = (proxy, m, a) -> {
+                switch (m.getName()) {
+                    case "auditIssues": return new ArrayList<>(issues);
+                    case "equals": return proxy == (a == null ? null : a[0]);
+                    case "hashCode": return System.identityHashCode(proxy);
+                    case "toString": return "AuditResult(" + issues.size() + ")";
+                    default: return defaultReturn(m.getReturnType());
+                }
+            };
+            return Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface}, h);
+        }
+    }
+
+    /** Flatten a varargs array or a List into a plain element list (nulls dropped). */
+    static List<Object> toObjectList(Object arg) {
+        List<Object> out = new ArrayList<>();
+        if (arg instanceof Object[]) {
+            for (Object o : (Object[]) arg) if (o != null) out.add(o);
+        } else if (arg instanceof List) {
+            for (Object o : (List<?>) arg) if (o != null) out.add(o);
+        } else if (arg != null) {
+            out.add(arg);
+        }
+        return out;
     }
 
     /** First HttpRequest among the args (action builders take req in varying slots). */

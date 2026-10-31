@@ -284,6 +284,21 @@ impl Engine {
             Arc::new(extras.clone()),
         )));
 
+        // Running extensions' passive scan checks file Findings too, off the same
+        // "passive scanning" switch. Created before the sink so both the sink and
+        // the engine share the live running-extension maps.
+        let bapp_hosts: Arc<Mutex<HashMap<String, Arc<jvm::ServeHost>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let bapp_state: Arc<Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        ingest.add_sink(Box::new(jvm::BappScanner::new(
+            Arc::clone(&store),
+            ingest.clone(),
+            Arc::clone(&passive_enabled),
+            Arc::clone(&bapp_hosts),
+            Arc::clone(&bapp_state),
+        )));
+
         let engine = Arc::new(Self {
             runtime,
             ca: Arc::new(ca),
@@ -295,8 +310,8 @@ impl Engine {
             plugins,
             browser_exit_hook: Mutex::new(None),
             jvm_resources: Mutex::new(None),
-            bapp_hosts: Arc::new(Mutex::new(HashMap::new())),
-            bapp_state: Arc::new(Mutex::new(HashMap::new())),
+            bapp_hosts,
+            bapp_state,
             sender: RwLock::new(sender),
             attacks: Mutex::new(HashMap::new()),
             next_attack_id: AtomicU64::new(1),

@@ -6,7 +6,9 @@
 //! Python (Jython) extensions are run through the same host with the Jython jar on
 //! the classpath (scaffolded).
 
+mod scan;
 mod serve;
+pub use scan::BappScanner;
 pub use serve::{BappBridge, HandlerAction, Phase, ServeHost, Target, process_chain};
 
 use anyhow::{Context, Result, anyhow};

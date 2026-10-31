@@ -58,6 +58,10 @@ public final class Host {
     static final List<Object> menuProviders = new ArrayList<>();
     /** Legacy burp.IContextMenuFactory instances the extension registered. */
     static final List<Object> legacyMenuFactories = new ArrayList<>();
+    /** Montoya ScanCheck instances the extension registered (passive/active audit). */
+    static final List<Object> scanChecks = new ArrayList<>();
+    /** Legacy burp.IScannerCheck instances the extension registered. */
+    static final List<Object> legacyScanCheckers = new ArrayList<>();
     /** The menu items produced by the last enumeration, keyed by the id we handed
      *  the UI. Firing an id calls that item's action (which opens the extension's
      *  own window). Rebuilt on every enumeration, so only the live menu can fire. */
@@ -358,6 +362,10 @@ public final class Host {
                 menuProviders.add(a);
             } else if (isA(a, "burp.IContextMenuFactory")) {
                 legacyMenuFactories.add(a);
+            } else if (isA(a, "burp.api.montoya.scanner.ScanCheck")) {
+                scanChecks.add(a);
+            } else if (isA(a, "burp.IScannerCheck")) {
+                legacyScanCheckers.add(a);
             }
         }
     }
@@ -393,6 +401,8 @@ public final class Host {
                     handleMenu(out, line);
                 } else if (line.startsWith("@FIRE\t")) {
                     handleFire(out, line);
+                } else if (line.startsWith("@SCAN\t")) {
+                    handleScan(out, line);
                 }
             }
         } catch (Throwable t) {
@@ -488,6 +498,138 @@ public final class Host {
             out.println("@FIRED\t" + id + "\t" + status);
             out.flush();
         }
+    }
+
+    /**
+     * @SCAN: run the extension's passive scan checks over one request/response and
+     * reply @ISSUES with the issues they raised.
+     *
+     * Frame: {@code @SCAN\t<id>\t<host>\t<port>\t<secure>\t<b64 request>\t<b64 response>}
+     * Reply: {@code @ISSUES\t<id>\t<b64 json [{"name","detail","severity","confidence","url"}]>}
+     */
+    static void handleScan(PrintStream out, String line) {
+        String[] f = line.split("\t", -1);
+        String id = f.length > 1 ? f[1] : "0";
+        String host = f.length > 2 ? f[2] : "";
+        int port = f.length > 3 ? parseIntOr(f[3], 0) : 0;
+        boolean secure = f.length > 4 && ("1".equals(f[4]) || "true".equalsIgnoreCase(f[4]));
+        byte[] req = f.length > 5 && !f[5].isEmpty() ? Base64.getDecoder().decode(f[5]) : new byte[0];
+        byte[] resp = f.length > 6 && !f[6].isEmpty() ? Base64.getDecoder().decode(f[6]) : null;
+        List<String> issues = new ArrayList<>();
+        try {
+            collectMontoyaIssues(new MontoyaObjects.Svc(host, port, secure), req, resp, issues);
+        } catch (Throwable t) {
+            reportHandlerError(t);
+        }
+        try {
+            collectLegacyIssues(host, port, secure, req, resp, issues);
+        } catch (Throwable t) {
+            reportHandlerError(t);
+        }
+        StringBuilder b = new StringBuilder("[");
+        for (int i = 0; i < issues.size(); i++) {
+            if (i > 0) {
+                b.append(',');
+            }
+            b.append(issues.get(i));
+        }
+        b.append(']');
+        String payload = Base64.getEncoder().encodeToString(b.toString().getBytes(StandardCharsets.UTF_8));
+        synchronized (out) {
+            out.println("@ISSUES\t" + id + "\t" + payload);
+            out.flush();
+        }
+    }
+
+    /** Run every Montoya ScanCheck's passiveAudit over this request/response. */
+    static void collectMontoyaIssues(HttpService svc, byte[] req, byte[] resp, List<String> out)
+            throws Exception {
+        if (scanChecks.isEmpty()) {
+            return;
+        }
+        ClassLoader cl = scanChecks.get(0).getClass().getClassLoader();
+        Class<?> scIface = Class.forName("burp.api.montoya.scanner.ScanCheck", true, cl);
+        Class<?> hrrIface = Class.forName("burp.api.montoya.http.message.HttpRequestResponse", true, cl);
+        Class<?> arIface = Class.forName("burp.api.montoya.scanner.AuditResult", true, cl);
+        Class<?> aiIface = Class.forName("burp.api.montoya.scanner.audit.issues.AuditIssue", true, cl);
+        Method passive = scIface.getMethod("passiveAudit", hrrIface);
+        Method issuesM = arIface.getMethod("auditIssues");
+        Method nameM = aiIface.getMethod("name");
+        Method detailM = aiIface.getMethod("detail");
+        Method sevM = aiIface.getMethod("severity");
+        Method confM = aiIface.getMethod("confidence");
+        Method urlM = aiIface.getMethod("baseUrl");
+        Object reqResp = MontoyaObjects.requestResponse(svc, req, resp);
+        for (Object sc : scanChecks) {
+            try {
+                Object result = passive.invoke(sc, reqResp);
+                if (result == null) {
+                    continue;
+                }
+                Object list = issuesM.invoke(result);
+                if (!(list instanceof List)) {
+                    continue;
+                }
+                for (Object issue : (List<?>) list) {
+                    out.add(issueJson(sv(nameM, issue), sv(detailM, issue),
+                            sv(sevM, issue), sv(confM, issue), sv(urlM, issue)));
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+    }
+
+    /** Run every legacy IScannerCheck's doPassiveScan over this request/response. */
+    static void collectLegacyIssues(String host, int port, boolean secure, byte[] req, byte[] resp,
+            List<String> out) throws Exception {
+        if (legacyScanCheckers.isEmpty()) {
+            return;
+        }
+        ClassLoader cl = legacyScanCheckers.get(0).getClass().getClassLoader();
+        Class<?> ihrr = Class.forName("burp.IHttpRequestResponse", true, cl);
+        Class<?> ihs = Class.forName("burp.IHttpService", true, cl);
+        Class<?> checkIface = Class.forName("burp.IScannerCheck", true, cl);
+        Class<?> issueIface = Class.forName("burp.IScanIssue", true, cl);
+        Method passive = checkIface.getMethod("doPassiveScan", ihrr);
+        Method nameM = issueIface.getMethod("getIssueName");
+        Method detailM = issueIface.getMethod("getIssueDetail");
+        Method sevM = issueIface.getMethod("getSeverity");
+        Method confM = issueIface.getMethod("getConfidence");
+        Method urlM = issueIface.getMethod("getUrl");
+        LegacyMsg lm = new LegacyMsg(host, port, secure ? "https" : "http", req, resp);
+        Object msg = Proxy.newProxyInstance(cl, new Class<?>[]{ihrr, ihs}, lm);
+        lm.self = msg;
+        for (Object chk : legacyScanCheckers) {
+            try {
+                Object list = passive.invoke(chk, msg);
+                if (!(list instanceof List)) {
+                    continue;
+                }
+                for (Object issue : (List<?>) list) {
+                    out.add(issueJson(sv(nameM, issue), sv(detailM, issue),
+                            sv(sevM, issue), sv(confM, issue), sv(urlM, issue)));
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+    }
+
+    /** Invoke a no-arg getter reflectively; "" on null or any failure. */
+    static String sv(Method m, Object o) {
+        try {
+            Object v = m.invoke(o);
+            return v == null ? "" : String.valueOf(v);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    static String issueJson(String name, String detail, String sev, String conf, String url) {
+        return "{\"name\":" + q(name) + ",\"detail\":" + q(detail)
+                + ",\"severity\":" + q(sev) + ",\"confidence\":" + q(conf)
+                + ",\"url\":" + q(url) + "}";
     }
 
     /** Ask every Montoya ContextMenuItemsProvider for items on this selection. */
