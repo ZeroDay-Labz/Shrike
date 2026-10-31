@@ -719,19 +719,19 @@ export default function App() {
         <main className="content">
           {/* Keep-alive tools: mounted once, shown/hidden via display, so their
               state survives tab switches. `main` is null for these tools. */}
-          <div className="keepalive" style={{ display: tool === "intruder" ? "contents" : "none" }}>
+          <div className="keepalive" style={{ display: tool === "intruder" ? "flex" : "none" }}>
             <Intruder seed={intruderSeed} />
           </div>
-          <div className="keepalive" style={{ display: tool === "decoder" ? "contents" : "none" }}>
+          <div className="keepalive" style={{ display: tool === "decoder" ? "flex" : "none" }}>
             <Decoder seed={decoderSeed} />
           </div>
-          <div className="keepalive" style={{ display: tool === "comparer" ? "contents" : "none" }}>
+          <div className="keepalive" style={{ display: tool === "comparer" ? "flex" : "none" }}>
             <Comparer seed={comparerSeed} />
           </div>
-          <div className="keepalive" style={{ display: tool === "sequencer" ? "contents" : "none" }}>
+          <div className="keepalive" style={{ display: tool === "sequencer" ? "flex" : "none" }}>
             <Sequencer />
           </div>
-          <div className="keepalive" style={{ display: tool === "jwt" ? "contents" : "none" }}>
+          <div className="keepalive" style={{ display: tool === "jwt" ? "flex" : "none" }}>
             <Jwt />
           </div>
           {main}
