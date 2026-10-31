@@ -26,6 +26,7 @@ use crate::intruder::{AttackEvent, AttackResult};
 use crate::proxy;
 use crate::scope::Scope;
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -44,14 +45,32 @@ pub const MAX_RACE_COUNT: usize = 256;
 /// connection from stalling the whole burst.
 const WARMUP_DEADLINE: Duration = Duration::from_secs(5);
 
+/// How the burst is synchronised on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RaceVariant {
+    /// HTTP/1.1, one connection per copy: write all but the last byte, then
+    /// release the final byte on every connection together. Works everywhere.
+    #[default]
+    LastByte,
+    /// HTTP/2, one connection for the whole burst: open every copy's stream
+    /// (headers only), then release each stream's final frame together — so the
+    /// requests ride the same connection and land in a tighter window than
+    /// separate TCP connections can manage. Requires an HTTP/2 target.
+    H2SinglePacket,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RaceConfig {
     pub service: HttpService,
-    /// Raw HTTP/1.1 request (request line + headers, optional blank line + body).
-    /// `Content-Length` is recalculated from the body before sending.
+    /// Raw HTTP/1.1-style request (request line + headers, optional blank line +
+    /// body). For the HTTP/2 variant the request line and headers are translated
+    /// to HTTP/2 pseudo-headers; `Content-Length` is recalculated for HTTP/1.1.
     pub request: String,
     /// How many synchronised copies to fire.
     pub count: usize,
+    #[serde(default)]
+    pub variant: RaceVariant,
     /// Per-connection ceiling for connect + warmup + reading the response.
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
@@ -295,6 +314,252 @@ fn error_result(index: usize, message: String) -> AttackResult {
     }
 }
 
+/// Emit a single error row plus a finished event when the burst can't even be set
+/// up (TLS/HTTP-2 handshake, request parse). Keeps the UI out of a stuck state.
+fn emit_setup_failure(
+    attack_id: u64,
+    sink: &Arc<dyn Fn(AttackEvent) + Send + Sync>,
+    message: String,
+) {
+    sink(AttackEvent::Results {
+        results: vec![error_result(0, message)],
+    });
+    sink(AttackEvent::Done {
+        attack_id,
+        completed: 0,
+        stopped: false,
+    });
+}
+
+/// Wait for every copy to warm up (or the deadline), release the gate so they all
+/// fire together, then collect and order the results.
+async fn coordinate(
+    set: &mut tokio::task::JoinSet<AttackResult>,
+    gate: &Notify,
+    ready: &AtomicUsize,
+    count: usize,
+    stop: &AtomicBool,
+) -> Vec<AttackResult> {
+    let warmup_start = Instant::now();
+    loop {
+        if ready.load(Ordering::Relaxed) >= count || warmup_start.elapsed() >= WARMUP_DEADLINE {
+            break;
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    // notify_waiters wakes every currently-parked waiter at once.
+    gate.notify_waiters();
+
+    let mut results: Vec<AttackResult> = Vec::with_capacity(count);
+    while let Some(joined) = set.join_next().await {
+        if let Ok(r) = joined {
+            results.push(r);
+        }
+    }
+    results.sort_by_key(|r| r.index);
+    results
+}
+
+// --- HTTP/2 single-packet variant ---
+
+/// The request translated into HTTP/2 terms once, shared across all streams.
+struct H2Request {
+    method: http::Method,
+    uri: http::Uri,
+    headers: Vec<(http::header::HeaderName, http::header::HeaderValue)>,
+    body: Bytes,
+}
+
+impl H2Request {
+    /// Parse a raw HTTP/1.1-style request into HTTP/2 parts. Connection-specific
+    /// and HTTP/1 framing headers are dropped — they are illegal or meaningless
+    /// over HTTP/2 (`:authority` carries the host; framing is per-frame).
+    fn parse(request: &str, service: &HttpService) -> Result<Self> {
+        let (head_raw, body) = if let Some(i) = request.find("\r\n\r\n") {
+            (&request[..i], &request[i + 4..])
+        } else if let Some(i) = request.find("\n\n") {
+            (&request[..i], &request[i + 2..])
+        } else {
+            (request, "")
+        };
+        let mut lines = head_raw.split('\n');
+        let start = lines.next().unwrap_or("").trim_end_matches('\r');
+        let mut sp = start.split_whitespace();
+        let method_str = sp.next().unwrap_or("GET");
+        let target = sp.next().unwrap_or("/");
+
+        let method = http::Method::from_bytes(method_str.as_bytes())
+            .with_context(|| format!("invalid method {method_str:?}"))?;
+
+        let mut host_header: Option<String> = None;
+        let mut headers = Vec::new();
+        for line in lines {
+            let line = line.trim_end_matches('\r');
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            let (name, value) = (name.trim(), value.trim());
+            let lname = name.to_ascii_lowercase();
+            if lname == "host" {
+                host_header = Some(value.to_string());
+                continue;
+            }
+            // Headers that are illegal or redundant over HTTP/2.
+            if matches!(
+                lname.as_str(),
+                "content-length"
+                    | "connection"
+                    | "proxy-connection"
+                    | "transfer-encoding"
+                    | "keep-alive"
+                    | "upgrade"
+                    | "te"
+            ) {
+                continue;
+            }
+            let hn = http::header::HeaderName::from_bytes(name.as_bytes())
+                .with_context(|| format!("invalid header name {name:?}"))?;
+            let hv = http::header::HeaderValue::from_str(value)
+                .with_context(|| format!("invalid header value for {name:?}"))?;
+            headers.push((hn, hv));
+        }
+
+        let scheme = if service.secure { "https" } else { "http" };
+        let authority = host_header.unwrap_or_else(|| format!("{}:{}", service.host, service.port));
+        let uri: http::Uri = format!("{scheme}://{authority}{target}")
+            .parse()
+            .with_context(|| "building HTTP/2 request URI")?;
+
+        Ok(Self {
+            method,
+            uri,
+            headers,
+            body: Bytes::from(body.as_bytes().to_vec()),
+        })
+    }
+
+    fn to_http(&self) -> Result<http::Request<()>> {
+        let mut builder = http::Request::builder()
+            .method(self.method.clone())
+            .uri(self.uri.clone());
+        for (n, v) in &self.headers {
+            builder = builder.header(n, v);
+        }
+        builder.body(()).context("building HTTP/2 request")
+    }
+}
+
+/// Establish one HTTP/2 connection for the whole burst and return a cloneable
+/// request handle. Uses ALPN `h2` over TLS, or prior-knowledge h2 over cleartext.
+async fn h2_connect(
+    service: &HttpService,
+    tls_mode: UpstreamTlsMode,
+) -> Result<h2::client::SendRequest<Bytes>> {
+    let tcp = TcpStream::connect((service.host.as_str(), service.port))
+        .await
+        .with_context(|| format!("connecting to {}:{}", service.host, service.port))?;
+    tcp.set_nodelay(true).ok();
+
+    if service.secure {
+        let connector = build_connector_h2(tls_mode)?;
+        let name = ServerName::try_from(service.host.clone())
+            .with_context(|| format!("invalid TLS server name {:?}", service.host))?;
+        let tls = connector
+            .connect(name, tcp)
+            .await
+            .context("TLS handshake")?;
+        {
+            let (_, conn) = tls.get_ref();
+            if conn.alpn_protocol() != Some(b"h2") {
+                anyhow::bail!("server did not negotiate HTTP/2 (ALPN) — try the last-byte variant");
+            }
+        }
+        let (send_req, connection) = h2::client::handshake(tls)
+            .await
+            .context("HTTP/2 handshake")?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(send_req)
+    } else {
+        // Cleartext HTTP/2 with prior knowledge (no upgrade dance).
+        let (send_req, connection) = h2::client::handshake(tcp)
+            .await
+            .context("HTTP/2 handshake")?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(send_req)
+    }
+}
+
+/// One HTTP/2 copy: open the stream (headers only, `end_of_stream=false`), park on
+/// the gate, then release by sending the body as the final frame with END_STREAM.
+async fn one_copy_h2(
+    index: usize,
+    send_req: h2::client::SendRequest<Bytes>,
+    parts: Arc<H2Request>,
+    gate: Arc<Notify>,
+    ready: Arc<AtomicUsize>,
+    timeout: Duration,
+) -> AttackResult {
+    let run = async {
+        // Wait until the connection can open a new stream (flow/concurrency).
+        let mut send_req = send_req.ready().await.context("HTTP/2 stream capacity")?;
+        let request = parts.to_http()?;
+        // end_of_stream = false: the headers go now, the data frame is withheld.
+        let (response_fut, mut body) = send_req
+            .send_request(request, false)
+            .context("opening HTTP/2 stream")?;
+
+        // Park on the gate (register the waiter before announcing readiness).
+        let notified = gate.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        ready.fetch_add(1, Ordering::Relaxed);
+        notified.await;
+
+        // Release: send the body (possibly empty) with END_STREAM. Doing this for
+        // every stream back-to-back after the gate opens packs the final frames
+        // into a tight burst on the shared connection.
+        let started = Instant::now();
+        let payload = parts.body.clone();
+        if !payload.is_empty() {
+            body.reserve_capacity(payload.len());
+        }
+        body.send_data(payload, true)
+            .context("sending HTTP/2 final frame")?;
+
+        let response = response_fut.await.context("awaiting HTTP/2 response")?;
+        let status = response.status().as_u16();
+        let mut rbody = response.into_body();
+        let mut length = 0usize;
+        while let Some(chunk) = rbody.data().await {
+            let chunk = chunk.context("reading HTTP/2 response body")?;
+            length += chunk.len();
+            // Return flow-control capacity so the server keeps sending.
+            let _ = rbody.flow_control().release_capacity(chunk.len());
+        }
+        Ok::<_, anyhow::Error>((status, length, started.elapsed()))
+    };
+
+    match tokio::time::timeout(timeout, run).await {
+        Ok(Ok((status, length, elapsed))) => AttackResult {
+            index: index as u64,
+            payloads: vec![format!("copy {}", index + 1)],
+            status: Some(status),
+            length,
+            duration_ms: elapsed.as_millis() as u64,
+            error: None,
+        },
+        Ok(Err(e)) => error_result(index, format!("{e:#}")),
+        Err(_) => error_result(index, format!("timed out after {} ms", timeout.as_millis())),
+    }
+}
+
 /// Run a race-condition attack to completion, reporting through `sink`.
 ///
 /// Every copy is checked against `scope` (when enforced) before any socket is
@@ -348,65 +613,70 @@ pub async fn run_race(
         return;
     }
 
-    // Build the TLS connector once (shared across connections) when needed.
-    let tls = if config.service.secure {
-        match build_connector(tls_mode) {
-            Ok(c) => Some(Arc::new(c)),
-            Err(e) => {
-                sink(AttackEvent::Results {
-                    results: vec![error_result(0, format!("TLS setup failed: {e:#}"))],
-                });
-                sink(AttackEvent::Done {
-                    attack_id,
-                    completed: 0,
-                    stopped: false,
-                });
-                return;
-            }
-        }
-    } else {
-        None
-    };
-
-    let wire = Arc::new(build_wire(&config.request));
     let gate = Arc::new(Notify::new());
     let ready = Arc::new(AtomicUsize::new(0));
     let timeout = Duration::from_millis(config.timeout_ms.max(1));
 
+    // Spawn one task per copy, each parking on the shared gate once warmed up.
+    // Both variants drive the same gate/coordinator; they differ only in how a
+    // copy reaches and leaves the wire.
     let mut set = tokio::task::JoinSet::new();
-    for index in 0..count {
-        set.spawn(one_copy(
-            index,
-            Arc::clone(&wire),
-            config.service.clone(),
-            tls.clone(),
-            Arc::clone(&gate),
-            Arc::clone(&ready),
-            timeout,
-        ));
+    match config.variant {
+        RaceVariant::LastByte => {
+            let tls = if config.service.secure {
+                match build_connector(tls_mode) {
+                    Ok(c) => Some(Arc::new(c)),
+                    Err(e) => {
+                        emit_setup_failure(attack_id, &sink, format!("TLS setup failed: {e:#}"));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let wire = Arc::new(build_wire(&config.request));
+            for index in 0..count {
+                set.spawn(one_copy(
+                    index,
+                    Arc::clone(&wire),
+                    config.service.clone(),
+                    tls.clone(),
+                    Arc::clone(&gate),
+                    Arc::clone(&ready),
+                    timeout,
+                ));
+            }
+        }
+        RaceVariant::H2SinglePacket => {
+            // One connection carries the whole burst, so establish it up front.
+            let send_req = match h2_connect(&config.service, tls_mode).await {
+                Ok(s) => s,
+                Err(e) => {
+                    emit_setup_failure(attack_id, &sink, format!("HTTP/2 setup failed: {e:#}"));
+                    return;
+                }
+            };
+            let parts = match H2Request::parse(&config.request, &config.service) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    emit_setup_failure(attack_id, &sink, format!("request parse failed: {e:#}"));
+                    return;
+                }
+            };
+            for index in 0..count {
+                set.spawn(one_copy_h2(
+                    index,
+                    send_req.clone(),
+                    Arc::clone(&parts),
+                    Arc::clone(&gate),
+                    Arc::clone(&ready),
+                    timeout,
+                ));
+            }
+        }
     }
 
-    // Coordinator: once every connection has warmed up (or the deadline passes),
-    // release them all at once. notify_waiters wakes every parked waiter together.
-    let warmup_start = Instant::now();
-    loop {
-        if ready.load(Ordering::Relaxed) >= count || warmup_start.elapsed() >= WARMUP_DEADLINE {
-            break;
-        }
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    gate.notify_waiters();
-
-    let mut results: Vec<AttackResult> = Vec::with_capacity(count);
-    while let Some(joined) = set.join_next().await {
-        if let Ok(r) = joined {
-            results.push(r);
-        }
-    }
-    results.sort_by_key(|r| r.index);
+    let results = coordinate(&mut set, &gate, &ready, count, &stop).await;
     let completed = results.iter().filter(|r| r.error.is_none()).count() as u64;
 
     sink(AttackEvent::Results { results });
@@ -423,6 +693,15 @@ fn build_connector(mode: UpstreamTlsMode) -> Result<TlsConnector> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = proxy::client_tls_config(mode, provider)?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+/// A TLS connector that advertises `h2` (then `http/1.1`) via ALPN, for the
+/// HTTP/2 single-packet variant.
+fn build_connector_h2(mode: UpstreamTlsMode) -> Result<TlsConnector> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = proxy::client_tls_config(mode, provider)?;
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
@@ -558,6 +837,7 @@ mod tests {
             },
             request: "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".into(),
             count: 8,
+            variant: RaceVariant::LastByte,
             timeout_ms: 5_000,
         };
         let results = Arc::new(std::sync::Mutex::new(Vec::<AttackResult>::new()));
@@ -604,6 +884,7 @@ mod tests {
             },
             request: "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".into(),
             count: 4,
+            variant: RaceVariant::LastByte,
             timeout_ms: 500,
         };
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -627,6 +908,98 @@ mod tests {
         assert!(
             stopped.load(Ordering::SeqCst),
             "out-of-scope burst is refused"
+        );
+    }
+
+    #[test]
+    fn h2_request_parse_drops_h1_framing_and_builds_pseudo_headers() {
+        let parts = H2Request::parse(
+            "POST /buy?id=9 HTTP/1.1\r\nHost: shop.test\r\nContent-Length: 3\r\nConnection: keep-alive\r\nX-Token: abc\r\n\r\nqty",
+            &HttpService { host: "shop.test".into(), port: 443, secure: true },
+        )
+        .unwrap();
+        assert_eq!(parts.method, http::Method::POST);
+        assert_eq!(parts.uri.to_string(), "https://shop.test/buy?id=9");
+        assert_eq!(&parts.body[..], b"qty");
+        // Host/Content-Length/Connection are gone; the custom header stays.
+        let names: Vec<_> = parts.headers.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["x-token"]);
+    }
+
+    /// End-to-end over a real (cleartext, prior-knowledge) HTTP/2 server: every
+    /// synchronised copy completes with a 200 on the one shared connection.
+    #[tokio::test]
+    async fn h2_single_packet_all_copies_complete() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut conn = match h2::server::handshake(tcp).await {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    while let Some(request) = conn.accept().await {
+                        let Ok((req, mut respond)) = request else {
+                            continue;
+                        };
+                        tokio::spawn(async move {
+                            // Wait for the full request (its withheld final frame)
+                            // before responding — a real race target consumes the
+                            // request, so this is what the burst synchronises on.
+                            let mut body = req.into_body();
+                            while let Some(d) = body.data().await {
+                                if let Ok(chunk) = d {
+                                    let _ = body.flow_control().release_capacity(chunk.len());
+                                }
+                            }
+                            let response = http::Response::builder().status(200).body(()).unwrap();
+                            if let Ok(mut stream) = respond.send_response(response, false) {
+                                let _ = stream.send_data(Bytes::from_static(b"ok"), true);
+                            }
+                        });
+                    }
+                });
+            }
+        });
+
+        let config = RaceConfig {
+            service: HttpService {
+                host: "127.0.0.1".into(),
+                port: addr.port(),
+                secure: false,
+            },
+            request: "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".into(),
+            count: 12,
+            variant: RaceVariant::H2SinglePacket,
+            timeout_ms: 5_000,
+        };
+        let results = Arc::new(std::sync::Mutex::new(Vec::<AttackResult>::new()));
+        let r2 = Arc::clone(&results);
+        let sink: Arc<dyn Fn(AttackEvent) + Send + Sync> = Arc::new(move |ev| {
+            if let AttackEvent::Results { results } = ev {
+                r2.lock().unwrap().extend(results);
+            }
+        });
+        run_race(
+            1,
+            config,
+            UpstreamTlsMode::Verify,
+            sink,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        let got = results.lock().unwrap();
+        assert_eq!(got.len(), 12, "every copy produced a result: {got:?}");
+        assert!(
+            got.iter().all(|r| r.status == Some(200)),
+            "all copies completed over HTTP/2: {got:?}"
+        );
+        assert!(
+            got.iter().all(|r| r.length == 2),
+            "body length read: {got:?}"
         );
     }
 }

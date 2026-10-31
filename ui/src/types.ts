@@ -200,6 +200,8 @@ export interface RaceConfig {
   request: string;
   /** Number of synchronised copies to fire at once. */
   count: number;
+  /** Wire synchronisation strategy. */
+  variant?: "last_byte" | "h2_single_packet";
   timeout_ms?: number;
 }
 

@@ -57,6 +57,7 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   const [scopeOk, setScopeOk] = useState<boolean | null>(null);
   // Race-condition attack: number of synchronised copies to fire at once.
   const [raceCount, setRaceCount] = useState("20");
+  const [raceVariant, setRaceVariant] = useState<"last_byte" | "h2_single_packet">("last_byte");
 
   const viewRef = useRef<EditorView | null>(null);
   const attackIdRef = useRef<number | undefined>(undefined);
@@ -192,7 +193,7 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
     const count = Math.max(2, Math.min(256, Math.floor(Number(raceCount)) || 20));
     setResults([]); setTotal(0); setCapped(false); setRunning(true);
     try {
-      const id = await api.raceStart({ service, request: template.split(MARK).join(""), count });
+      const id = await api.raceStart({ service, request: template.split(MARK).join(""), count, variant: raceVariant });
       attackIdRef.current = id;
     } catch (e) { setRunning(false); attackIdRef.current = undefined; toast(String(e), "error"); }
   }
@@ -377,9 +378,15 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
                 <span className="mut small">race ×</span>
                 <input className="num race-num" type="number" min={2} max={256} value={raceCount}
                   onChange={(e) => setRaceCount(e.target.value)} />
+                <select className="race-var" value={raceVariant}
+                  onChange={(e) => setRaceVariant(e.target.value as typeof raceVariant)}
+                  title="last-byte: one connection per copy (works everywhere). HTTP/2: one connection, tighter window (needs an HTTP/2 target)">
+                  <option value="last_byte">last-byte</option>
+                  <option value="h2_single_packet">HTTP/2</option>
+                </select>
               </label>
               <button className="btn" disabled={scopeBlocked} onClick={race}
-                title="Race condition: send N last-byte-synchronised copies at once">⇉ Race</button>
+                title="Race condition: send N synchronised copies at once">⇉ Race</button>
               <button className="btn start" disabled={posCount === 0 || scopeBlocked} onClick={start}>▶ Start</button>
             </>}
         <span className="mut small">{results.length}{total ? `/${total}` : ""}{errorCount ? ` · ${errorCount} err` : ""}{running ? " · running" : ""}{capped ? " · capped" : ""}</span>
