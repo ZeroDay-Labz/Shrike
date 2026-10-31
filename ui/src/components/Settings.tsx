@@ -75,61 +75,83 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
 
   return (
     <div className="settings">
-      <h2>Proxy settings</h2>
-      <label>Listen address
-        <input value={listen} onChange={(e) => setListen(e.target.value)} />
-      </label>
-      <label className="row">
-        <input type="checkbox" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
-        Accept invalid upstream certificates (lab targets only)
-      </label>
-      <label>Passthrough hosts (one per line; a leading dot matches subdomains)
-        <textarea rows={5} value={passthrough} onChange={(e) => setPassthrough(e.target.value)} />
-      </label>
-      <fieldset className="radio-group">
-        <legend>Proxy scope mode</legend>
-        <label className="radio">
-          <input type="radio" name="scopemode" checked={scopeMode === "all"} onChange={() => setScopeMode("all")} />
-          <span><b>Global proxy</b> — intercept and record all traffic (default).</span>
-        </label>
-        <label className="radio">
-          <input type="radio" name="scopemode" checked={scopeMode === "capture"} onChange={() => setScopeMode("capture")} />
-          <span><b>Capture in-scope only</b> — everything still browses normally, but only requests to the target scope below are recorded. Best for staying clean during an engagement. (With no scope rules, everything is captured.)</span>
-        </label>
-        <label className="radio">
-          <input type="radio" name="scopemode" checked={scopeMode === "block"} onChange={() => setScopeMode("block")} />
-          <span><b>Block out-of-scope</b> — refuse anything outside the scope with 403. Enforced in the Rust core. With no scope rules, everything is refused.</span>
-        </label>
-      </fieldset>
-      <label className="row">
-        <input type="checkbox" checked={requireScope} onChange={(e) => setRequireScope(e.target.checked)} />
-        Require target scope for Intruder. Enforced in the Rust core: out-of-scope requests are blocked and never sent. With an empty scope, an attack is refused. Recommended on.
-      </label>
-      <label>Integrated browser — Chromium path (optional)
-        <input value={chromiumPath} placeholder="leave blank to use the bundled / system Chromium"
-          onChange={(e) => setChromiumPath(e.target.value)} />
-      </label>
-      <label>GitHub token for the extension catalog (optional)
-        <input type="password" value={githubToken} placeholder="lifts GitHub's 60-requests/hour limit when browsing/installing"
-          onChange={(e) => setGithubToken(e.target.value)} />
-      </label>
-      <label>Request timeout (ms) — Repeater &amp; Intruder
-        <input value={timeoutMs} inputMode="numeric"
-          onChange={(e) => setTimeoutMs(Math.max(1000, Number(e.target.value) || 30000))} />
-      </label>
-      <label>History retention — keep newest N requests (0 = unlimited)
-        <input value={historyMax} inputMode="numeric"
-          onChange={(e) => setHistoryMax(Math.max(0, Number(e.target.value) || 0))} />
-      </label>
-      <label className="row">
-        <input type="checkbox" checked={passiveScan} onChange={(e) => setPassiveScan(e.target.checked)} />
-        Passive scanning — inspect captured traffic and raise Findings (security headers, cookie flags, reflected input, info leaks). Sends no extra requests.
-      </label>
-      <div className="row">
-        <button className="btn start" onClick={save}>Save</button>
+      <div className="settings-head">
+        <h2>Settings</h2>
+        <span className="mut">Proxy, engagement safety, integrations and data — grouped. Changes apply on Save; the proxy restarts if it was running.</span>
+      </div>
+
+      <div className="settings-grid">
+        <section className="settings-card">
+          <h3>Proxy listener</h3>
+          <label>Listen address
+            <input value={listen} onChange={(e) => setListen(e.target.value)} />
+          </label>
+          <label className="row">
+            <input type="checkbox" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
+            Accept invalid upstream certificates (lab targets only)
+          </label>
+          <label>Passthrough hosts (one per line; a leading dot matches subdomains)
+            <textarea rows={4} value={passthrough} onChange={(e) => setPassthrough(e.target.value)} />
+          </label>
+        </section>
+
+        <section className="settings-card">
+          <h3>Scope &amp; engagement safety</h3>
+          <fieldset className="radio-group">
+            <legend>Proxy scope mode</legend>
+            <label className="radio">
+              <input type="radio" name="scopemode" checked={scopeMode === "all"} onChange={() => setScopeMode("all")} />
+              <span><b>Global proxy</b> — intercept and record all traffic (default).</span>
+            </label>
+            <label className="radio">
+              <input type="radio" name="scopemode" checked={scopeMode === "capture"} onChange={() => setScopeMode("capture")} />
+              <span><b>Capture in-scope only</b> — everything still browses normally, but only requests to the target scope below are recorded. Best for staying clean during an engagement. (With no scope rules, everything is captured.)</span>
+            </label>
+            <label className="radio">
+              <input type="radio" name="scopemode" checked={scopeMode === "block"} onChange={() => setScopeMode("block")} />
+              <span><b>Block out-of-scope</b> — refuse anything outside the scope with 403. Enforced in the Rust core. With no scope rules, everything is refused.</span>
+            </label>
+          </fieldset>
+          <label className="row">
+            <input type="checkbox" checked={requireScope} onChange={(e) => setRequireScope(e.target.checked)} />
+            Require target scope for Intruder &amp; race attacks. Enforced in the Rust core: out-of-scope requests are blocked and never sent. With an empty scope, an attack is refused. Recommended on.
+          </label>
+          <label className="row">
+            <input type="checkbox" checked={passiveScan} onChange={(e) => setPassiveScan(e.target.checked)} />
+            Passive scanning — inspect captured traffic and raise Findings (security headers, cookie flags, reflected input, info leaks). Sends no extra requests.
+          </label>
+        </section>
+
+        <section className="settings-card">
+          <h3>Integrations</h3>
+          <label>Integrated browser — Chromium path (optional)
+            <input value={chromiumPath} placeholder="leave blank to use the bundled / system Chromium"
+              onChange={(e) => setChromiumPath(e.target.value)} />
+          </label>
+          <label>GitHub token for the extension catalog (optional)
+            <input type="password" value={githubToken} placeholder="lifts GitHub's 60-requests/hour limit when browsing/installing"
+              onChange={(e) => setGithubToken(e.target.value)} />
+          </label>
+        </section>
+
+        <section className="settings-card">
+          <h3>Performance &amp; data</h3>
+          <label>Request timeout (ms) — Repeater &amp; Intruder
+            <input value={timeoutMs} inputMode="numeric"
+              onChange={(e) => setTimeoutMs(Math.max(1000, Number(e.target.value) || 30000))} />
+          </label>
+          <label>History retention — keep newest N requests (0 = unlimited)
+            <input value={historyMax} inputMode="numeric"
+              onChange={(e) => setHistoryMax(Math.max(0, Number(e.target.value) || 0))} />
+          </label>
+          <p className="mut">Data directory: {props.config?.data_dir}</p>
+        </section>
+      </div>
+
+      <div className="settings-save row">
+        <button className="btn start" onClick={save}>Save settings</button>
         {msg && <span className="msg">{msg}</span>}
       </div>
-      <p className="mut">Data directory: {props.config?.data_dir}</p>
 
       <hr className="sep" />
       <h2>Import traffic</h2>
