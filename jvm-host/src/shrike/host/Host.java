@@ -51,6 +51,9 @@ public final class Host {
     static boolean serve = false;
     /** HTTP handlers the extension registered, in registration order. */
     static final List<HttpHandler> httpHandlers = new ArrayList<>();
+    /** Legacy (pre-Montoya) burp.IHttpListener instances, in registration order.
+     *  Held as Object because the type lives on the extension's class loader. */
+    static final List<Object> legacyListeners = new ArrayList<>();
     /** Our JSON/line channel to the Rust host (the real stdout). */
     static PrintStream out = System.out;
 
@@ -74,7 +77,14 @@ public final class Host {
         try {
             Class<?> extClass = findExtensionClass(jarPath);
             if (extClass == null) {
-                realOut.println(json(false, "no class implementing burp.api.montoya.BurpExtension found"));
+                // Not a Montoya extension — try the legacy (pre-Montoya) IBurpExtender API.
+                Class<?> legacy = findLegacyExtensionClass(jarPath);
+                if (legacy != null) {
+                    runLegacy(legacy, realOut);
+                    return;
+                }
+                realOut.println(json(false,
+                        "no class implementing burp.api.montoya.BurpExtension or burp.IBurpExtender found"));
                 return;
             }
             Object extension = extClass.getDeclaredConstructor().newInstance();
@@ -175,6 +185,69 @@ public final class Host {
         return null;
     }
 
+    /**
+     * Load a legacy (pre-Montoya) {@code burp.IBurpExtender} jar: instantiate the
+     * extender and hand it a reflective proxy of {@code burp.IBurpExtenderCallbacks}
+     * backed by the same universal handler the Jython path uses. Known callbacks
+     * (setExtensionName, logging, register*) do the real thing; any IHttpListener
+     * it registers then processes live traffic in {@link #serveLoop}. This is the
+     * clean-room legacy compatibility layer: we implement the *published* Extender
+     * API exactly as extension developers consume it.
+     */
+    static void runLegacy(Class<?> extClass, PrintStream realOut) {
+        try {
+            Object extension = extClass.getDeclaredConstructor().newInstance();
+            Class<?> cbIface = Class.forName("burp.IBurpExtenderCallbacks", true, extClass.getClassLoader());
+            Object callbacks = proxy(cbIface);
+            extClass.getMethod("registerExtenderCallbacks", cbIface).invoke(extension, callbacks);
+            realOut.println(json(true, null));
+            realOut.flush();
+            if (serve) {
+                serveLoop(realOut);
+            } else if (!probe && uiWindows > 0) {
+                Thread.currentThread().join();
+            }
+        } catch (Throwable t) {
+            Throwable cause = (t instanceof InvocationTargetException && t.getCause() != null) ? t.getCause() : t;
+            realOut.println(json(false, cause.getClass().getSimpleName() + ": " + cause.getMessage()));
+        }
+    }
+
+    /** Find the first class in the jar that implements the legacy burp.IBurpExtender. */
+    static Class<?> findLegacyExtensionClass(String jarPath) throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[]{new java.io.File(jarPath).toURI().toURL()},
+                Host.class.getClassLoader());
+        Class<?> iface;
+        try {
+            iface = Class.forName("burp.IBurpExtender", true, loader);
+        } catch (ClassNotFoundException e) {
+            return null; // legacy Extender API not on the classpath
+        }
+        // Fast path: the convention is a class literally named burp.BurpExtender.
+        try {
+            Class<?> c = Class.forName("burp.BurpExtender", false, loader);
+            if (iface.isAssignableFrom(c) && !c.isInterface() && !Modifier.isAbstract(c.getModifiers())) {
+                return c;
+            }
+        } catch (Throwable ignore) { /* fall through to a full scan */ }
+        try (JarFile jf = new JarFile(jarPath)) {
+            Enumeration<JarEntry> e = jf.entries();
+            while (e.hasMoreElements()) {
+                String name = e.nextElement().getName();
+                if (!name.endsWith(".class") || name.contains("module-info")) continue;
+                String cn = name.substring(0, name.length() - 6).replace('/', '.');
+                try {
+                    Class<?> c = Class.forName(cn, false, loader);
+                    if (iface.isAssignableFrom(c) && !c.isInterface()
+                            && !Modifier.isAbstract(c.getModifiers())) {
+                        return c;
+                    }
+                } catch (Throwable ignore) { /* skip unloadable classes */ }
+            }
+        }
+        return null;
+    }
+
     /** A dynamic proxy for a Montoya interface, backed by the universal handler. */
     static Object proxy(Class<?> iface) {
         return Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface}, HANDLER);
@@ -257,10 +330,29 @@ public final class Host {
             return;
         }
         for (Object a : args) {
+            if (a == null) {
+                continue;
+            }
             if (a instanceof HttpHandler) {
                 httpHandlers.add((HttpHandler) a);
+            } else if (implementsInterface(a, "burp.IHttpListener")) {
+                // Legacy traffic hook: processHttpMessage(int, boolean, IHttpRequestResponse).
+                legacyListeners.add(a);
             }
         }
+    }
+
+    /** Whether {@code o}'s class (or a superclass) directly implements an interface
+     *  with the given fully-qualified name. */
+    static boolean implementsInterface(Object o, String ifaceName) {
+        for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
+            for (Class<?> i : c.getInterfaces()) {
+                if (i.getName().equals(ifaceName)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -323,6 +415,7 @@ public final class Host {
                 reportHandlerError(t);
             }
         }
+        cur = runLegacyListeners(svc, cur, null, true);
         return new String[]{"continue", Base64.getEncoder().encodeToString(cur)};
     }
 
@@ -344,7 +437,89 @@ public final class Host {
                 reportHandlerError(t);
             }
         }
+        cur = runLegacyListeners(svc, null, cur, false);
         return new String[]{"continue", Base64.getEncoder().encodeToString(cur)};
+    }
+
+    /**
+     * Feed one message through every legacy burp.IHttpListener in turn. Each sees a
+     * mutable IHttpRequestResponse it may rewrite via setRequest/setResponse; we
+     * return the (possibly modified) bytes for the phase we are in. No-op when no
+     * legacy listener is registered.
+     */
+    static byte[] runLegacyListeners(HttpService svc, byte[] request, byte[] response, boolean isRequest) {
+        if (legacyListeners.isEmpty()) {
+            return isRequest ? request : response;
+        }
+        try {
+            ClassLoader cl = legacyListeners.get(0).getClass().getClassLoader();
+            Class<?> ihrr = Class.forName("burp.IHttpRequestResponse", true, cl);
+            Class<?> ihs = Class.forName("burp.IHttpService", true, cl);
+            LegacyMsg h = new LegacyMsg(svc.host(), svc.port(),
+                    svc.secure() ? "https" : "http", request, response);
+            Object msg = Proxy.newProxyInstance(cl, new Class<?>[]{ihrr, ihs}, h);
+            h.self = msg;
+            // Legacy tool flag for Proxy (burp.IBurpExtenderCallbacks.TOOL_PROXY == 4).
+            for (Object l : legacyListeners) {
+                try {
+                    Method m = l.getClass().getMethod("processHttpMessage", int.class, boolean.class, ihrr);
+                    m.invoke(l, 4, isRequest, msg);
+                } catch (Throwable t) {
+                    reportHandlerError(t);
+                }
+            }
+            byte[] outReq = h.request == null ? request : h.request;
+            byte[] outResp = h.response == null ? response : h.response;
+            return isRequest ? outReq : outResp;
+        } catch (Throwable t) {
+            reportHandlerError(t);
+            return isRequest ? request : response;
+        }
+    }
+
+    /**
+     * A mutable IHttpRequestResponse (and its IHttpService) for legacy listeners.
+     * One instance backs a proxy implementing both interfaces; getHttpService()
+     * returns the same proxy, so getHost/getPort/getProtocol resolve off it too.
+     */
+    static final class LegacyMsg implements InvocationHandler {
+        final String host;
+        final int port;
+        final String protocol;
+        byte[] request;
+        byte[] response;
+        Object self;
+
+        LegacyMsg(String host, int port, String protocol, byte[] request, byte[] response) {
+            this.host = host;
+            this.port = port;
+            this.protocol = protocol;
+            this.request = request;
+            this.response = response;
+        }
+
+        @Override
+        public Object invoke(Object p, Method m, Object[] a) {
+            switch (m.getName()) {
+                case "getRequest": return request == null ? new byte[0] : request;
+                case "setRequest": request = (byte[]) a[0]; return null;
+                case "getResponse": return response == null ? new byte[0] : response;
+                case "setResponse": response = (byte[]) a[0]; return null;
+                case "getHttpService": return self;
+                case "getHost": return host;
+                case "getPort": return port;
+                case "getProtocol": return protocol;
+                default: break;
+            }
+            Class<?> r = m.getReturnType();
+            if (r == boolean.class) {
+                return false;
+            }
+            if (r.isPrimitive()) {
+                return defaultPrimitive(r);
+            }
+            return null;
+        }
     }
 
     static void reportHandlerError(Throwable t) {
