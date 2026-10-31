@@ -423,6 +423,8 @@ export interface ExtraStatus {
   category: string;
   kind: "passive" | "active";
   description: string;
+  /** For active extras: where in the UI to run this. Empty for passive extras. */
+  run_hint: string;
   sends_traffic: boolean;
   enabled: boolean;
 }

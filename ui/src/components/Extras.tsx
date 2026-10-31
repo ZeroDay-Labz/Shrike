@@ -85,8 +85,8 @@ export function Extras(props: { onGoToProxy: () => void }) {
               <div className="extra-cat">{e.category}</div>
               <p className="extra-desc">{e.description}</p>
               <div className="extra-run-hint">
-                Right-click a request in <button className="link" onClick={props.onGoToProxy}>Proxy</button> history and
-                choose <b>Active scan this request</b>.
+                {e.run_hint || "Run this deliberately from its own entry point."}{" "}
+                <button className="link" onClick={props.onGoToProxy}>Open Proxy</button>
               </div>
             </div>
           ))}

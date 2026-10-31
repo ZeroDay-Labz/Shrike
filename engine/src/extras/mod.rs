@@ -45,6 +45,9 @@ pub struct Extra {
     pub category: &'static str,
     pub kind: ExtraKind,
     pub description: &'static str,
+    /// For active extras: where in the UI the user runs this. Empty for passive
+    /// extras (they auto-run and need no hint).
+    pub run_hint: &'static str,
     /// Passive extras default on; active extras have no auto-run state and are
     /// reported as disabled (they run on demand).
     pub default_enabled: bool,
@@ -59,6 +62,7 @@ pub const CATALOG: &[Extra] = &[
         kind: ExtraKind::Passive,
         description: "Flags missing security headers, insecure cookie flags, \
                       information disclosure, server error signatures and mixed content.",
+        run_hint: "",
         default_enabled: true,
     },
     Extra {
@@ -68,6 +72,7 @@ pub const CATALOG: &[Extra] = &[
         kind: ExtraKind::Passive,
         description: "Notes request parameters reflected unencoded in the response — \
                       a lead for reflected XSS to confirm deliberately.",
+        run_hint: "",
         default_enabled: true,
     },
     Extra {
@@ -77,6 +82,7 @@ pub const CATALOG: &[Extra] = &[
         kind: ExtraKind::Passive,
         description: "Inspects JWTs in Authorization, cookies and Set-Cookie for the \
                       unsigned \"none\" algorithm, guessable secrets and expiry problems.",
+        run_hint: "",
         default_enabled: true,
     },
     Extra {
@@ -87,6 +93,7 @@ pub const CATALOG: &[Extra] = &[
         description: "Fingerprints front-end JavaScript libraries by version (from script \
                       URLs and inline banners) and flags versions with publicly known \
                       vulnerabilities — a native equivalent of the retire.js scanner.",
+        run_hint: "",
         default_enabled: true,
     },
     Extra {
@@ -96,6 +103,7 @@ pub const CATALOG: &[Extra] = &[
         kind: ExtraKind::Passive,
         description: "Tags captured traffic with the container colour from a PwnFox-style \
                       X-PwnFox-Color header (stripped before it reaches the target).",
+        run_hint: "",
         default_enabled: true,
     },
     Extra {
@@ -106,6 +114,34 @@ pub const CATALOG: &[Extra] = &[
         description: "Probes a chosen request for reflected XSS, error-based SQL injection, \
                       SSTI, path traversal and command injection. Sends crafted requests, so \
                       run it deliberately on an in-scope target.",
+        run_hint: "Right-click a request in Proxy or Logger history and choose \
+                   \"Active scan this request\".",
+        default_enabled: false,
+    },
+    Extra {
+        id: "race",
+        name: "Race-condition attack",
+        category: "Active tools",
+        kind: ExtraKind::Active,
+        description: "Fires many copies of a request in one synchronised burst — last-byte \
+                      synchronisation over HTTP/1.1, or an HTTP/2 single-packet — to surface \
+                      race conditions (double-spend, TOCTOU, limit bypass). A native fast-burst \
+                      attack built into Intruder.",
+        run_hint: "Load a request into Intruder, then use the Race control (\u{21c9} Race) to \
+                   fire N synchronised copies at once.",
+        default_enabled: false,
+    },
+    Extra {
+        id: "param-discovery",
+        name: "Hidden parameter discovery",
+        category: "Active tools",
+        kind: ExtraKind::Active,
+        description: "Brute-forces query, body and header parameters a request silently honours \
+                      but never links, using a built-in wordlist with reflection and \
+                      response-difference heuristics — a native equivalent of the param-miner \
+                      scanner.",
+        run_hint: "Right-click a request in Proxy or Logger history and choose \
+                   \"Discover hidden parameters\".",
         default_enabled: false,
     },
 ];
@@ -118,6 +154,8 @@ pub struct ExtraStatus {
     pub category: String,
     pub kind: ExtraKind,
     pub description: String,
+    /// For active extras: where in the UI to run this. Empty for passive extras.
+    pub run_hint: String,
     /// True when traffic hits the wire if this runs (the active extras).
     pub sends_traffic: bool,
     /// Passive: whether it auto-runs. Active: always false (runs on demand only).
@@ -197,6 +235,7 @@ impl Extras {
                 category: e.category.to_string(),
                 kind: e.kind,
                 description: e.description.to_string(),
+                run_hint: e.run_hint.to_string(),
                 sends_traffic: e.kind.sends_traffic(),
                 enabled: e.kind == ExtraKind::Passive && enabled.contains(e.id),
             })
@@ -225,7 +264,7 @@ mod tests {
             .filter(|s| s.sends_traffic)
             .map(|s| s.id)
             .collect();
-        assert_eq!(sends, vec!["active-audit"]);
+        assert_eq!(sends, vec!["active-audit", "race", "param-discovery"]);
     }
 
     #[test]
