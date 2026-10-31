@@ -54,6 +54,22 @@ public final class Host {
     /** Legacy (pre-Montoya) burp.IHttpListener instances, in registration order.
      *  Held as Object because the type lives on the extension's class loader. */
     static final List<Object> legacyListeners = new ArrayList<>();
+    /** Montoya ContextMenuItemsProvider instances the extension registered. */
+    static final List<Object> menuProviders = new ArrayList<>();
+    /** Legacy burp.IContextMenuFactory instances the extension registered. */
+    static final List<Object> legacyMenuFactories = new ArrayList<>();
+    /** The menu items produced by the last enumeration, keyed by the id we handed
+     *  the UI. Firing an id calls that item's action (which opens the extension's
+     *  own window). Rebuilt on every enumeration, so only the live menu can fire. */
+    static final Map<Integer, MenuEntry> menuItems = new LinkedHashMap<>();
+    static int menuItemSeq = 0;
+
+    /** One enumerated menu item: a display label and the Swing item that fires it. */
+    static final class MenuEntry {
+        final String label;
+        final javax.swing.JMenuItem item;
+        MenuEntry(String label, javax.swing.JMenuItem item) { this.label = label; this.item = item; }
+    }
     /** Our JSON/line channel to the Rust host (the real stdout). */
     static PrintStream out = System.out;
 
@@ -335,24 +351,25 @@ public final class Host {
             }
             if (a instanceof HttpHandler) {
                 httpHandlers.add((HttpHandler) a);
-            } else if (implementsInterface(a, "burp.IHttpListener")) {
+            } else if (isA(a, "burp.IHttpListener")) {
                 // Legacy traffic hook: processHttpMessage(int, boolean, IHttpRequestResponse).
                 legacyListeners.add(a);
+            } else if (isA(a, "burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider")) {
+                menuProviders.add(a);
+            } else if (isA(a, "burp.IContextMenuFactory")) {
+                legacyMenuFactories.add(a);
             }
         }
     }
 
-    /** Whether {@code o}'s class (or a superclass) directly implements an interface
-     *  with the given fully-qualified name. */
-    static boolean implementsInterface(Object o, String ifaceName) {
-        for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
-            for (Class<?> i : c.getInterfaces()) {
-                if (i.getName().equals(ifaceName)) {
-                    return true;
-                }
-            }
+    /** Whether {@code o} is an instance of the named interface, resolved through
+     *  {@code o}'s own class loader (so it matches sub-interfaces and lambdas). */
+    static boolean isA(Object o, String ifaceName) {
+        try {
+            return Class.forName(ifaceName, false, o.getClass().getClassLoader()).isInstance(o);
+        } catch (Throwable t) {
+            return false;
         }
-        return false;
     }
 
     /**
@@ -370,27 +387,293 @@ public final class Host {
         try {
             String line;
             while ((line = in.readLine()) != null) {
-                if (!line.startsWith("@REQ\t")) {
-                    continue;
-                }
-                String[] f = line.split("\t", -1);
-                if (f.length < 7) {
-                    continue;
-                }
-                String id = f[1];
-                String phase = f[2];
-                HttpService svc = new MontoyaObjects.Svc(f[3], parseIntOr(f[4], 0),
-                        "1".equals(f[5]) || "true".equalsIgnoreCase(f[5]));
-                byte[] raw = Base64.getDecoder().decode(f[6]);
-                String[] r = "response".equals(phase) ? dispatchResponse(svc, raw) : dispatchRequest(svc, raw);
-                synchronized (out) {
-                    out.println("@RES\t" + id + "\t" + r[0] + "\t" + r[1]);
-                    out.flush();
+                if (line.startsWith("@REQ\t")) {
+                    handleReq(out, line);
+                } else if (line.startsWith("@MENU\t")) {
+                    handleMenu(out, line);
+                } else if (line.startsWith("@FIRE\t")) {
+                    handleFire(out, line);
                 }
             }
         } catch (Throwable t) {
             // stdin closed or unreadable → stop serving, let the JVM exit.
         }
+    }
+
+    /** @REQ: run one message through the handler chain and reply @RES. */
+    static void handleReq(PrintStream out, String line) {
+        String[] f = line.split("\t", -1);
+        if (f.length < 7) {
+            return;
+        }
+        String id = f[1];
+        String phase = f[2];
+        HttpService svc = new MontoyaObjects.Svc(f[3], parseIntOr(f[4], 0),
+                "1".equals(f[5]) || "true".equalsIgnoreCase(f[5]));
+        byte[] raw = Base64.getDecoder().decode(f[6]);
+        String[] r = "response".equals(phase) ? dispatchResponse(svc, raw) : dispatchRequest(svc, raw);
+        synchronized (out) {
+            out.println("@RES\t" + id + "\t" + r[0] + "\t" + r[1]);
+            out.flush();
+        }
+    }
+
+    /**
+     * @MENU: enumerate the context-menu items the extension contributes for a
+     * selected request/response, and reply @MENURES with their labels.
+     *
+     * Frame: {@code @MENU\t<id>\t<host>\t<port>\t<secure>\t<b64 request>\t<b64 response>}
+     * Reply: {@code @MENURES\t<id>\t<b64 json [{"id":N,"label":"..."}]>}
+     */
+    static void handleMenu(PrintStream out, String line) {
+        String[] f = line.split("\t", -1);
+        String id = f.length > 1 ? f[1] : "0";
+        String host = f.length > 2 ? f[2] : "";
+        int port = f.length > 3 ? parseIntOr(f[3], 0) : 0;
+        boolean secure = f.length > 4 && ("1".equals(f[4]) || "true".equalsIgnoreCase(f[4]));
+        byte[] req = f.length > 5 && !f[5].isEmpty() ? Base64.getDecoder().decode(f[5]) : new byte[0];
+        byte[] resp = f.length > 6 && !f[6].isEmpty() ? Base64.getDecoder().decode(f[6]) : null;
+        menuItems.clear();
+        try {
+            collectMontoyaItems(new MontoyaObjects.Svc(host, port, secure), req, resp);
+        } catch (Throwable t) {
+            reportHandlerError(t);
+        }
+        try {
+            collectLegacyItems(host, port, secure, req, resp);
+        } catch (Throwable t) {
+            reportHandlerError(t);
+        }
+        StringBuilder b = new StringBuilder("[");
+        boolean first = true;
+        for (Map.Entry<Integer, MenuEntry> e : menuItems.entrySet()) {
+            if (!first) {
+                b.append(',');
+            }
+            first = false;
+            b.append("{\"id\":").append(e.getKey()).append(",\"label\":").append(q(e.getValue().label)).append('}');
+        }
+        b.append(']');
+        String payload = Base64.getEncoder().encodeToString(b.toString().getBytes(StandardCharsets.UTF_8));
+        synchronized (out) {
+            out.println("@MENURES\t" + id + "\t" + payload);
+            out.flush();
+        }
+    }
+
+    /** @FIRE: click the menu item with the given id (opens the extension's UI). */
+    static void handleFire(PrintStream out, String line) {
+        String[] f = line.split("\t", -1);
+        String id = f.length > 1 ? f[1] : "0";
+        int itemId = f.length > 2 ? parseIntOr(f[2], -1) : -1;
+        MenuEntry e = menuItems.get(itemId);
+        String status;
+        if (e == null) {
+            status = "err:no such menu item";
+        } else {
+            try {
+                javax.swing.SwingUtilities.invokeLater(() -> {
+                    try {
+                        e.item.doClick();
+                    } catch (Throwable t) {
+                        reportHandlerError(t);
+                    }
+                });
+                status = "ok";
+            } catch (Throwable t) {
+                status = "err:" + t.getMessage();
+            }
+        }
+        synchronized (out) {
+            out.println("@FIRED\t" + id + "\t" + status);
+            out.flush();
+        }
+    }
+
+    /** Ask every Montoya ContextMenuItemsProvider for items on this selection. */
+    static void collectMontoyaItems(HttpService svc, byte[] req, byte[] resp) throws Exception {
+        if (menuProviders.isEmpty()) {
+            return;
+        }
+        ClassLoader cl = menuProviders.get(0).getClass().getClassLoader();
+        Class<?> eventIface = Class.forName("burp.api.montoya.ui.contextmenu.ContextMenuEvent", true, cl);
+        Class<?> provIface = Class.forName("burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider", true, cl);
+        Object reqResp = MontoyaObjects.requestResponse(svc, req, resp);
+        Class<?> merrIface = Class.forName(
+                "burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse", true, cl);
+        Object editor = Proxy.newProxyInstance(cl, new Class<?>[]{merrIface},
+                new MessageEditorRR(reqResp));
+        Object event = Proxy.newProxyInstance(cl, new Class<?>[]{eventIface},
+                new ContextMenuEvent(reqResp, editor));
+        Method m = provIface.getMethod("provideMenuItems", eventIface);
+        for (Object p : menuProviders) {
+            try {
+                Object res = m.invoke(p, event);
+                if (res instanceof List) {
+                    for (Object c : (List<?>) res) {
+                        flattenMenu(c, "");
+                    }
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+    }
+
+    /** Ask every legacy IContextMenuFactory for items on this selection. */
+    static void collectLegacyItems(String host, int port, boolean secure, byte[] req, byte[] resp)
+            throws Exception {
+        if (legacyMenuFactories.isEmpty()) {
+            return;
+        }
+        ClassLoader cl = legacyMenuFactories.get(0).getClass().getClassLoader();
+        Class<?> ihrr = Class.forName("burp.IHttpRequestResponse", true, cl);
+        Class<?> ihs = Class.forName("burp.IHttpService", true, cl);
+        Class<?> invIface = Class.forName("burp.IContextMenuInvocation", true, cl);
+        Class<?> facIface = Class.forName("burp.IContextMenuFactory", true, cl);
+        LegacyMsg lm = new LegacyMsg(host, port, secure ? "https" : "http", req, resp);
+        Object message = Proxy.newProxyInstance(cl, new Class<?>[]{ihrr, ihs}, lm);
+        lm.self = message;
+        Object selected = java.lang.reflect.Array.newInstance(ihrr, 1);
+        java.lang.reflect.Array.set(selected, 0, message);
+        Object inv = Proxy.newProxyInstance(cl, new Class<?>[]{invIface}, new ContextMenuInvocation(selected));
+        Method m = facIface.getMethod("createMenuItems", invIface);
+        for (Object fac : legacyMenuFactories) {
+            try {
+                Object res = m.invoke(fac, inv);
+                if (res instanceof List) {
+                    for (Object c : (List<?>) res) {
+                        flattenMenu(c, "");
+                    }
+                }
+            } catch (Throwable t) {
+                reportHandlerError(t);
+            }
+        }
+    }
+
+    /** Walk a returned Swing component tree, registering each leaf JMenuItem (a
+     *  JMenu's children are prefixed with its label) so nested menus still fire. */
+    static void flattenMenu(Object c, String prefix) {
+        if (c instanceof javax.swing.JMenu) {
+            javax.swing.JMenu menu = (javax.swing.JMenu) c;
+            String p = prefix + text(menu.getText()) + " ▸ ";
+            for (int i = 0; i < menu.getItemCount(); i++) {
+                flattenMenu(menu.getItem(i), p);
+            }
+        } else if (c instanceof javax.swing.JMenuItem) {
+            javax.swing.JMenuItem item = (javax.swing.JMenuItem) c;
+            String label = prefix + text(item.getText());
+            menuItems.put(++menuItemSeq, new MenuEntry(label, item));
+        }
+    }
+
+    static String text(String s) {
+        return s == null || s.isEmpty() ? "(menu item)" : s;
+    }
+
+    /** ContextMenuEvent (Montoya): the selected request/response the user clicked. */
+    static final class ContextMenuEvent implements InvocationHandler {
+        final Object reqResp;
+        final Object editor;
+        ContextMenuEvent(Object reqResp, Object editor) { this.reqResp = reqResp; this.editor = editor; }
+
+        @Override
+        public Object invoke(Object p, Method m, Object[] a) throws Throwable {
+            switch (m.getName()) {
+                case "selectedRequestResponses": {
+                    List<Object> l = new ArrayList<>();
+                    l.add(reqResp);
+                    return l;
+                }
+                case "messageEditorRequestResponse":
+                    return Optional.of(editor);
+                case "selectedClientRequestResponses":
+                    return new ArrayList<>();
+                case "toolType":
+                    return proxyEnum(m.getReturnType());
+                case "isFromTool":
+                case "hasHttpRequestResponses":
+                    return Boolean.TRUE;
+                case "inputEvent":
+                    return Optional.empty();
+                default:
+                    return HANDLER.invoke(p, m, a);
+            }
+        }
+    }
+
+    /** IContextMenuInvocation (legacy): the selected messages the user clicked. */
+    static final class ContextMenuInvocation implements InvocationHandler {
+        final Object selected; // IHttpRequestResponse[]
+        ContextMenuInvocation(Object selected) { this.selected = selected; }
+
+        @Override
+        public Object invoke(Object p, Method m, Object[] a) {
+            switch (m.getName()) {
+                case "getSelectedMessages":
+                    return selected;
+                case "getInvocationContext":
+                    return (byte) 6; // CONTEXT_PROXY_HISTORY
+                case "getToolFlag":
+                    return 4; // TOOL_PROXY
+                case "getSelectionBounds":
+                    return new int[]{0, 0};
+                case "getInputEvent":
+                    return null;
+                default:
+                    Class<?> r = m.getReturnType();
+                    if (r == boolean.class) {
+                        return false;
+                    }
+                    if (r.isPrimitive()) {
+                        return defaultPrimitive(r);
+                    }
+                    return null;
+            }
+        }
+    }
+
+    /** MessageEditorHttpRequestResponse (Montoya): the editor's current message,
+     *  for providers that only add items in a message-editor context. */
+    static final class MessageEditorRR implements InvocationHandler {
+        final Object reqResp;
+        MessageEditorRR(Object reqResp) { this.reqResp = reqResp; }
+
+        @Override
+        public Object invoke(Object p, Method m, Object[] a) {
+            switch (m.getName()) {
+                case "requestResponse":
+                    return reqResp;
+                case "selectionOffsets":
+                    return Optional.empty();
+                case "caretPosition":
+                    return 0;
+                case "selectionContext":
+                    return proxyEnum(m.getReturnType());
+                default:
+                    break;
+            }
+            Class<?> r = m.getReturnType();
+            if (r == boolean.class) {
+                return false;
+            }
+            if (r.isPrimitive()) {
+                return defaultPrimitive(r);
+            }
+            if (r == Optional.class) {
+                return Optional.empty();
+            }
+            return null;
+        }
+    }
+
+    static Object proxyEnum(Class<?> ret) {
+        if (ret.isEnum()) {
+            Object[] consts = ret.getEnumConstants();
+            return consts != null && consts.length > 0 ? consts[0] : null;
+        }
+        return null;
     }
 
     /** Run a request through every HTTP handler in turn; returns {action, base64}. */

@@ -344,6 +344,12 @@ export interface BappOutput {
   line: string;
 }
 
+/** One context-menu item a running extension contributes for a request. */
+export interface ExtMenuItem { id: number; label: string }
+
+/** The context-menu items one running extension offers for a selection. */
+export interface ExtMenu { sha256: string; name: string | null; items: ExtMenuItem[] }
+
 export interface JwtParts {
   header: string;
   payload: string;

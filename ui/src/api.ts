@@ -93,6 +93,10 @@ export const api = {
   bappStop: (sha256: string) => invoke<string[]>("bapp_stop", { sha256 }),
   bappRunning: () => invoke<string[]>("bapp_running"),
   bappRunningMeta: () => invoke<import("./types").RunningBapp[]>("bapp_running_meta"),
+  extMenuItems: (service: import("./types").Service, request: string, response?: string) =>
+    invoke<import("./types").ExtMenu[]>("ext_menu_items", { service, request, response }),
+  extMenuFire: (sha256: string, itemId: number) =>
+    invoke<string>("ext_menu_fire", { sha256, itemId }),
   jwtDecode: (token: string) => invoke<import("./types").JwtParts>("jwt_decode", { token }),
   jwtSign: (header: string, payload: string, alg: string, secret: string) =>
     invoke<string>("jwt_sign", { header, payload, alg, secret }),

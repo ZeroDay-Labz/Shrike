@@ -436,6 +436,49 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Append context-menu items contributed by running JVM extensions (Montoya
+  // ContextMenuItemsProvider / legacy IContextMenuFactory). Enumeration is an
+  // async round-trip to each extension host, so the menu opens immediately and
+  // the extension items are merged in when they arrive. Firing an item runs the
+  // extension's action (which opens its own window).
+  const enrichWithExtMenu = useCallback(
+    async (row: TransactionSummary, base: MenuItem[], x: number, y: number) => {
+      try {
+        const v = await api.historyGet(row.id);
+        if (!v) return;
+        const service = { host: row.host, port: row.port, secure: row.secure };
+        const request = rawRequest(v.request);
+        const response = v.response ? rawResponse(v.response) : undefined;
+        const menus = await api.extMenuItems(service, request, response);
+        if (!menus.length) return;
+        const extItems: MenuItem[] = [];
+        for (const m of menus) {
+          m.items.forEach((it, i) => {
+            extItems.push({
+              label: `${m.name ?? "Extension"}: ${it.label}`,
+              separatorBefore: i === 0,
+              onClick: async () => {
+                try {
+                  const status = await api.extMenuFire(m.sha256, it.id);
+                  if (status.startsWith("err:")) toast(status.slice(4), "error");
+                } catch (e) {
+                  toast(String(e), "error");
+                }
+              },
+            });
+          });
+        }
+        // Only merge if this same menu is still open (guard against a newer one).
+        setMenu((cur) =>
+          cur && cur.x === x && cur.y === y ? { x, y, items: [...base, ...extItems] } : cur,
+        );
+      } catch {
+        /* extensions are optional — a failure just leaves the base menu */
+      }
+    },
+    [],
+  );
+
   const openRowMenu = useCallback((e: React.MouseEvent, row: TransactionSummary) => {
     e.preventDefault();
     const getView = () => api.historyGet(row.id);
@@ -445,8 +488,10 @@ export default function App() {
       { label: "Copy as curl", onClick: async () => { const v = await getView(); if (v) copy(toCurl(v.request), "curl command"); } },
       { label: `Add host to scope (${row.host})`, separatorBefore: true, onClick: () => addHostToScope(row.host) },
     ];
-    setMenu({ x: e.clientX, y: e.clientY, items });
-  }, [sendItems, addHostToScope, copy]);
+    const x = e.clientX, y = e.clientY;
+    setMenu({ x, y, items });
+    void enrichWithExtMenu(row, items, x, y);
+  }, [sendItems, addHostToScope, copy, enrichWithExtMenu]);
 
   // Keyboard actions from the history table (Enter / Ctrl+R, Ctrl+I, menu key).
   const onRowAction = useCallback(async (action: RowAction, row: TransactionSummary, at: { x: number; y: number }) => {

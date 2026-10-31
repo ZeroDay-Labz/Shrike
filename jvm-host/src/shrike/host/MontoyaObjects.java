@@ -7,6 +7,7 @@ import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.RequestAction;
 import burp.api.montoya.http.handler.ResponseAction;
 import burp.api.montoya.http.message.HttpHeader;
+import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -87,6 +88,68 @@ final class MontoyaObjects {
                         burp.api.montoya.proxy.http.InterceptedResponse.class,
                 },
                 m);
+    }
+
+    /**
+     * Build an HttpRequestResponse pairing a request (and optional response) with
+     * their service — what a context-menu provider reads to seed its action.
+     */
+    static HttpRequestResponse requestResponse(HttpService service, byte[] req, byte[] resp) {
+        HttpRequest request = request(service, req, new Ann());
+        HttpResponse response = resp == null ? null : response(resp, new Ann());
+        return (HttpRequestResponse) Proxy.newProxyInstance(
+                HttpRequestResponse.class.getClassLoader(),
+                new Class<?>[]{HttpRequestResponse.class},
+                new RR(service, request, response));
+    }
+
+    /** An HttpRequestResponse facade over a request/response/service triple. */
+    static final class RR implements InvocationHandler {
+        final HttpService service;
+        final HttpRequest request;
+        final HttpResponse response;
+        RR(HttpService service, HttpRequest request, HttpResponse response) {
+            this.service = service;
+            this.request = request;
+            this.response = response;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) {
+            switch (method.getName()) {
+                case "request": return request;
+                case "response": return response;
+                case "httpService": return service;
+                case "url": return request == null ? "" : request.url();
+                case "hasResponse": return response != null;
+                case "annotations": return new Ann();
+                case "equals": return proxy == (args == null ? null : args[0]);
+                case "hashCode": return System.identityHashCode(proxy);
+                case "toString": return "ShrikeRequestResponse";
+                default: break;
+            }
+            Class<?> r = method.getReturnType();
+            if (r == boolean.class) {
+                return false;
+            }
+            if (r.isPrimitive()) {
+                if (r == char.class) return '\0';
+                if (r == double.class) return 0d;
+                if (r == float.class) return 0f;
+                if (r == long.class) return 0L;
+                return 0;
+            }
+            if (r == String.class) {
+                return "";
+            }
+            if (r == Optional.class) {
+                return Optional.empty();
+            }
+            if (List.class.isAssignableFrom(r)) {
+                return new ArrayList<>();
+            }
+            return null;
+        }
     }
 
     /**

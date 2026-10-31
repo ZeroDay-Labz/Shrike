@@ -13,8 +13,8 @@ use crate::{
     intercept::{Decision, Interceptor},
     intruder::{self, AttackEvent, IntruderConfig},
     jvm::{
-        self, BappOutput, InstallOutcome, InstalledBapp, JvmResources, JvmRuntime, JvmStatus,
-        RunningBapp,
+        self, BappOutput, ExtMenu, ExtMenuItem, InstallOutcome, InstalledBapp, JvmResources,
+        JvmRuntime, JvmStatus, RunningBapp,
     },
     match_replace::{MatchReplace, MatchReplaceRule},
     plugins::{PluginManifest, PluginRegistry},
@@ -1671,6 +1671,76 @@ impl Engine {
             .iter()
             .filter_map(|sha| state.get(sha).map(|s| s.lock().expect("state").clone()))
             .collect()
+    }
+
+    /// Context-menu items every running extension contributes for a selected
+    /// request/response. Each entry is one extension and the items it offered;
+    /// firing an item's id runs its action (opening the extension's own window).
+    ///
+    /// Asks only hosts that registered a context-menu hook. Snapshots the host
+    /// handles first and releases the state/host locks before the blocking
+    /// round-trips, so enumeration never stalls live traffic.
+    pub fn bapp_menu_items(
+        &self,
+        host: &str,
+        port: u16,
+        secure: bool,
+        request: &[u8],
+        response: Option<&[u8]>,
+    ) -> Vec<ExtMenu> {
+        let timeout = std::time::Duration::from_secs(5);
+        let alive = self.bapp_running();
+        let targets: Vec<(String, Option<String>, Arc<jvm::ServeHost>)> = {
+            let state = self.bapp_state.lock().expect("bapp state lock");
+            let hosts = self.bapp_hosts.lock().expect("bapp hosts lock");
+            let mut shas: Vec<&String> = alive.iter().collect();
+            shas.sort();
+            shas.into_iter()
+                .filter_map(|sha| {
+                    let meta = state.get(sha)?.lock().expect("running bapp lock");
+                    let has_menu = meta.registered.iter().any(|r| {
+                        r == "registerContextMenuItemsProvider" || r == "registerContextMenuFactory"
+                    });
+                    if !has_menu {
+                        return None;
+                    }
+                    let name = meta.name.clone();
+                    let h = hosts.get(sha)?;
+                    Some((sha.clone(), name, Arc::clone(h)))
+                })
+                .collect()
+        };
+        let target = jvm::Target { host, port, secure };
+        let mut out = Vec::new();
+        for (sha, name, h) in targets {
+            match h.menu_items(target, request, response, timeout) {
+                Ok(json) => {
+                    let items: Vec<ExtMenuItem> = serde_json::from_str(&json).unwrap_or_default();
+                    if !items.is_empty() {
+                        out.push(ExtMenu {
+                            sha256: sha,
+                            name,
+                            items,
+                        });
+                    }
+                }
+                Err(e) => warn!(error = %e, sha = %sha, "extension menu enumeration failed"),
+            }
+        }
+        out
+    }
+
+    /// Fire a context-menu item (by the id from [`Self::bapp_menu_items`]) on the
+    /// given extension, running its action. Returns the host's status string.
+    pub fn bapp_menu_fire(&self, sha256: &str, item_id: u32) -> Result<String> {
+        let host = self
+            .bapp_hosts
+            .lock()
+            .expect("bapp hosts lock")
+            .get(sha256)
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("that extension is not running"))?;
+        host.menu_fire(item_id, std::time::Duration::from_secs(5))
     }
 
     /// One-click Java runtime setup: stage the host + Montoya jars into the

@@ -976,6 +976,40 @@ fn bapp_running_meta(state: State<AppState>) -> Vec<shrike_engine::jvm::RunningB
     state.engine.bapp_running_meta()
 }
 
+/// Context-menu items every running extension offers for a selected request.
+#[tauri::command]
+async fn ext_menu_items(
+    state: State<'_, AppState>,
+    service: shrike_engine::core::HttpService,
+    request: String,
+    response: Option<String>,
+) -> CmdResult<Vec<shrike_engine::jvm::ExtMenu>> {
+    off_main(&state, move |e| {
+        let resp = response.map(String::into_bytes);
+        Ok(e.bapp_menu_items(
+            &service.host,
+            service.port,
+            service.secure,
+            request.as_bytes(),
+            resp.as_deref(),
+        ))
+    })
+    .await
+}
+
+/// Fire a context-menu item (by its enumerated id) on a running extension.
+#[tauri::command]
+async fn ext_menu_fire(
+    state: State<'_, AppState>,
+    sha256: String,
+    item_id: u32,
+) -> CmdResult<String> {
+    off_main(&state, move |e| {
+        e.bapp_menu_fire(&sha256, item_id).map_err(err)
+    })
+    .await
+}
+
 // ---- native JWT tool ----
 
 #[tauri::command]
@@ -1280,6 +1314,8 @@ pub fn run() {
             bapp_stop,
             bapp_running,
             bapp_running_meta,
+            ext_menu_items,
+            ext_menu_fire,
             jwt_decode,
             jwt_sign,
             jwt_verify,

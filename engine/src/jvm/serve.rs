@@ -68,6 +68,9 @@ pub struct ServeHost {
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     pending: Arc<Mutex<HashMap<u64, Sender<Res>>>>,
+    /// Waiters for @MENURES / @FIRED replies (context-menu bridge), keyed by id.
+    /// The payload is the raw field after the id (base64 JSON, or a fire status).
+    menu_pending: Arc<Mutex<HashMap<u64, Sender<String>>>>,
     next_id: AtomicU64,
 }
 
@@ -97,12 +100,20 @@ impl ServeHost {
         let stdout = child.stdout.take().context("capturing host stdout")?;
         let pending: Arc<Mutex<HashMap<u64, Sender<Res>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+        let menu_pending: Arc<Mutex<HashMap<u64, Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         let pending_r = Arc::clone(&pending);
+        let menu_pending_r = Arc::clone(&menu_pending);
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
                 if let Some(rest) = line.strip_prefix("@RES\t") {
                     route_result(&pending_r, rest);
+                } else if let Some(rest) = line.strip_prefix("@MENURES\t") {
+                    route_menu(&menu_pending_r, rest);
+                } else if let Some(rest) = line.strip_prefix("@FIRED\t") {
+                    route_menu(&menu_pending_r, rest);
                 } else {
                     on_line(line);
                 }
@@ -113,6 +124,7 @@ impl ServeHost {
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
             pending,
+            menu_pending,
             next_id: AtomicU64::new(1),
         }))
     }
@@ -155,6 +167,75 @@ impl ServeHost {
             Ok(res) => Ok(HandlerAction::Continue(res.raw)),
             Err(_) => {
                 self.pending.lock().expect("pending lock").remove(&id);
+                Err(anyhow!("serve host did not respond within {timeout:?}"))
+            }
+        }
+    }
+
+    /// Enumerate the context-menu items the extension contributes for a selected
+    /// request/response. Returns the JSON array `[{"id":N,"label":"..."}]` the
+    /// Java host produced (decoded from its base64 reply).
+    pub fn menu_items(
+        &self,
+        target: Target<'_>,
+        request: &[u8],
+        response: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = format!(
+            "@MENU\t{id}\t{}\t{}\t{}\t{}\t{}\n",
+            target.host,
+            target.port,
+            if target.secure { 1 } else { 0 },
+            B64.encode(request),
+            response.map(|r| B64.encode(r)).unwrap_or_default(),
+        );
+        let payload = self.menu_round_trip(id, &frame, timeout)?;
+        let json = B64
+            .decode(payload.trim())
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_else(|| "[]".to_string());
+        Ok(json)
+    }
+
+    /// Fire a previously-enumerated menu item by its id, which runs the item's
+    /// action (typically opening the extension's own window). Returns the host's
+    /// status string (`ok`, or `err:<message>`).
+    pub fn menu_fire(&self, item_id: u32, timeout: Duration) -> Result<String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = format!("@FIRE\t{id}\t{item_id}\n");
+        self.menu_round_trip(id, &frame, timeout)
+    }
+
+    /// Write a menu/fire frame and wait for its reply payload on `menu_pending`.
+    fn menu_round_trip(&self, id: u64, frame: &str, timeout: Duration) -> Result<String> {
+        let (tx, rx) = mpsc::channel();
+        self.menu_pending
+            .lock()
+            .expect("menu pending lock")
+            .insert(id, tx);
+        let write = {
+            let mut stdin = self.stdin.lock().expect("stdin lock");
+            stdin
+                .write_all(frame.as_bytes())
+                .and_then(|_| stdin.flush())
+        };
+        if let Err(e) = write {
+            self.menu_pending
+                .lock()
+                .expect("menu pending lock")
+                .remove(&id);
+            return Err(anyhow!("writing to serve host: {e}"));
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(payload) => Ok(payload),
+            Err(_) => {
+                self.menu_pending
+                    .lock()
+                    .expect("menu pending lock")
+                    .remove(&id);
                 Err(anyhow!("serve host did not respond within {timeout:?}"))
             }
         }
@@ -292,6 +373,19 @@ fn route_result(pending: &Mutex<HashMap<u64, Sender<Res>>>, rest: &str) {
     }
 }
 
+/// Route a @MENURES/@FIRED reply (`<id>\t<payload>`) to its waiter.
+fn route_menu(pending: &Mutex<HashMap<u64, Sender<String>>>, rest: &str) {
+    let mut it = rest.splitn(2, '\t');
+    let id = match it.next().and_then(|s| s.parse::<u64>().ok()) {
+        Some(i) => i,
+        None => return,
+    };
+    let payload = it.next().unwrap_or("").to_string();
+    if let Some(tx) = pending.lock().expect("menu pending lock").remove(&id) {
+        let _ = tx.send(payload);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +402,32 @@ mod tests {
         assert!(!res.drop);
         assert_eq!(res.raw, b"hello");
         assert!(pending.lock().unwrap().is_empty(), "waiter is consumed");
+    }
+
+    #[test]
+    fn route_menu_delivers_payload_by_id() {
+        let pending: Arc<Mutex<HashMap<u64, Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        pending.lock().unwrap().insert(5, tx);
+        // A reply for an unknown id is ignored; id 5 is delivered verbatim.
+        route_menu(&pending, "9\tsome-base64");
+        route_menu(&pending, "5\tW3siaWQiOjF9XQ==");
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "W3siaWQiOjF9XQ=="
+        );
+        assert!(pending.lock().unwrap().is_empty(), "waiter is consumed");
+    }
+
+    #[test]
+    fn route_menu_handles_fire_status() {
+        let pending: Arc<Mutex<HashMap<u64, Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        pending.lock().unwrap().insert(1, tx);
+        route_menu(&pending, "1\tok");
+        assert_eq!(rx.recv().unwrap(), "ok");
     }
 
     #[test]

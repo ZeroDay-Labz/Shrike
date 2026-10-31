@@ -101,6 +101,22 @@ pub struct BappOutput {
     pub line: String,
 }
 
+/// One context-menu item a running extension contributes for a selection. The
+/// `id` is fired back to that extension's host to run the item's action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtMenuItem {
+    pub id: u32,
+    pub label: String,
+}
+
+/// The context-menu items one running extension offers for a selected request.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtMenu {
+    pub sha256: String,
+    pub name: Option<String>,
+    pub items: Vec<ExtMenuItem>,
+}
+
 /// Suite-tab titles the host reported (it records them as `suiteTab:<title>`).
 pub fn suite_tabs(registered: &[String]) -> Vec<String> {
     registered
