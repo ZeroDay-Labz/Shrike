@@ -127,7 +127,17 @@ public final class Host {
             pi.getMethod("exec", String.class)
                 .invoke(interp, "BurpExtender().registerExtenderCallbacks(__shrike_cb)");
             realOut.println(json(true, null));
-            if (!probe && uiWindows > 0) {
+            realOut.flush();
+            if (serve) {
+                // Serve mode (how addons are launched): keep the host alive and
+                // drain the traffic protocol, exactly like the Montoya path. A
+                // legacy Jython extension registers through the burp.* callbacks,
+                // so it doesn't populate the Montoya handler list — the loop just
+                // keeps the process (and any Swing UI it opened) alive until Rust
+                // closes stdin. Without this the process exited the instant it
+                // finished loading, so the addon showed as "not running".
+                serveLoop(realOut);
+            } else if (!probe && uiWindows > 0) {
                 Thread.currentThread().join();
             }
         } catch (Throwable t) {
