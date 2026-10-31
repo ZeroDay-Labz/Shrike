@@ -915,3 +915,7 @@ body.sp-dragging, body.sp-dragging * { user-select: none !important; }
 .switch-btn.sm .switch { width: 30px; height: 17px; }
 .switch-btn.sm input:checked + .switch { background: var(--brand-strong); }
 .switch-btn.sm input:checked + .switch i { transform: translateX(13px); }
+
+/* Intruder race-condition control (next to Start) */
+.race-ctl { display: inline-flex; align-items: center; gap: 4px; }
+.race-num { width: 52px; padding: 2px 4px; text-align: right; }

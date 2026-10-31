@@ -55,6 +55,8 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
   // engine refuses the attack, so we surface that here before Start is pressed.
   const [requireScope, setRequireScope] = useState(false);
   const [scopeOk, setScopeOk] = useState<boolean | null>(null);
+  // Race-condition attack: number of synchronised copies to fire at once.
+  const [raceCount, setRaceCount] = useState("20");
 
   const viewRef = useRef<EditorView | null>(null);
   const attackIdRef = useRef<number | undefined>(undefined);
@@ -182,6 +184,18 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
     } catch (e) { setRunning(false); attackIdRef.current = undefined; toast(String(e), "error"); }
   }
   function stop() { if (attackIdRef.current != null) api.intruderStop(attackIdRef.current); }
+
+  // Race condition: fire N last-byte-synchronised copies of the request (markers
+  // stripped — a race sends the literal request, not a fuzzed one) so they arrive
+  // together. Results stream into the same grid via the shared event handler.
+  async function race() {
+    const count = Math.max(2, Math.min(256, Math.floor(Number(raceCount)) || 20));
+    setResults([]); setTotal(0); setCapped(false); setRunning(true);
+    try {
+      const id = await api.raceStart({ service, request: template.split(MARK).join(""), count });
+      attackIdRef.current = id;
+    } catch (e) { setRunning(false); attackIdRef.current = undefined; toast(String(e), "error"); }
+  }
 
   const sorted = useMemo(() => {
     const r = [...results];
@@ -358,7 +372,16 @@ export function Intruder(props: { seed?: { service: Service; raw: string } }) {
         <button className="link" onClick={() => setShowPreview((v) => !v)}>{showPreview ? "hide preview" : "preview"}</button>
         {running
           ? <button className="btn stop" onClick={stop}>■ Stop</button>
-          : <button className="btn start" disabled={posCount === 0 || scopeBlocked} onClick={start}>▶ Start</button>}
+          : <>
+              <label className="race-ctl" title="Fire this many copies of the request, synchronised to arrive together (race-condition testing)">
+                <span className="mut small">race ×</span>
+                <input className="num race-num" type="number" min={2} max={256} value={raceCount}
+                  onChange={(e) => setRaceCount(e.target.value)} />
+              </label>
+              <button className="btn" disabled={scopeBlocked} onClick={race}
+                title="Race condition: send N last-byte-synchronised copies at once">⇉ Race</button>
+              <button className="btn start" disabled={posCount === 0 || scopeBlocked} onClick={start}>▶ Start</button>
+            </>}
         <span className="mut small">{results.length}{total ? `/${total}` : ""}{errorCount ? ` · ${errorCount} err` : ""}{running ? " · running" : ""}{capped ? " · capped" : ""}</span>
       </div>
       {scopeBlocked && (

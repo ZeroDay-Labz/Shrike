@@ -667,6 +667,26 @@ fn intruder_stop(state: State<AppState>, id: u64) {
     state.engine.intruder_stop(id);
 }
 
+/// Start a race-condition (last-byte-synchronised) attack. Emits the same
+/// `intruder-event` stream, so results show in the Intruder results grid and
+/// `intruder_stop` cancels it.
+#[tauri::command]
+fn race_start(
+    state: State<AppState>,
+    app: AppHandle,
+    config: shrike_engine::race::RaceConfig,
+) -> CmdResult<u64> {
+    let app2 = app.clone();
+    let engine2 = std::sync::Arc::clone(&state.engine);
+    let sink: std::sync::Arc<dyn Fn(AttackEvent) + Send + Sync> = std::sync::Arc::new(move |ev| {
+        if let AttackEvent::Done { attack_id, .. } = &ev {
+            engine2.intruder_finished(*attack_id);
+        }
+        let _ = app2.emit("intruder-event", ev);
+    });
+    state.engine.race_start(config, sink).map_err(err)
+}
+
 #[tauri::command]
 fn intruder_preview(config: IntruderConfig) -> PreviewResult {
     shrike_engine::intruder::preview(&config, 8)
@@ -1214,6 +1234,7 @@ pub fn run() {
             repeater_send,
             intruder_start,
             intruder_stop,
+            race_start,
             intruder_preview,
             intruder_generate,
             decode_chain,

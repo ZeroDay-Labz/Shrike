@@ -194,6 +194,15 @@ export interface IntruderConfig {
   processors: Processor[];
 }
 
+export interface RaceConfig {
+  service: Service;
+  /** Raw HTTP/1.1 request; Content-Length is recalculated before sending. */
+  request: string;
+  /** Number of synchronised copies to fire at once. */
+  count: number;
+  timeout_ms?: number;
+}
+
 export type Generator =
   | { kind: "numbers"; from: number; to: number; step: number }
   | { kind: "brute_force"; charset: string; min_len: number; max_len: number }

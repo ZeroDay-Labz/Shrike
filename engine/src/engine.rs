@@ -19,6 +19,7 @@ use crate::{
     match_replace::{MatchReplace, MatchReplaceRule},
     plugins::{PluginManifest, PluginRegistry},
     proxy,
+    race::{self, RaceConfig},
     scope::{Scope, ScopeRule},
     sender::{RequestSpec, SendResult, Sender},
     store::{HistoryFilter, ProjectMeta, SiteNode, Store, TrafficStats},
@@ -440,6 +441,41 @@ impl Engine {
         let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
         self.runtime.spawn(async move {
             intruder::run(id, config, sender, sink, stop, scope).await;
+        });
+        Ok(id)
+    }
+
+    /// Start a race-condition (last-byte-synchronised) attack in the background.
+    /// Shares the Intruder's attack-id space and `AttackEvent` stream, so results
+    /// render in the same grid and `intruder_stop` cancels it. Scope is enforced
+    /// under the same policy as the Intruder — a burst must not leave scope.
+    pub fn race_start(
+        &self,
+        config: RaceConfig,
+        sink: Arc<dyn Fn(AttackEvent) + Send + Sync>,
+    ) -> Result<u64> {
+        let require_scope = self.config().intruder_require_scope;
+        let scope = if require_scope {
+            if self.scope.read().expect("scope lock").is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty, so nothing is in scope — add an include rule in \
+                     Settings, or turn off \"require scope for Intruder\" there"
+                ));
+            }
+            Some(Arc::clone(&self.scope))
+        } else {
+            None
+        };
+
+        let tls_mode = self.config().upstream_tls;
+        let id = self.next_attack_id.fetch_add(1, Ordering::Relaxed);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.attacks
+            .lock()
+            .expect("attacks lock")
+            .insert(id, Arc::clone(&stop));
+        self.runtime.spawn(async move {
+            race::run_race(id, config, tls_mode, sink, stop, scope).await;
         });
         Ok(id)
     }

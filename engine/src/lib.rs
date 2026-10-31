@@ -23,6 +23,7 @@ pub mod oob;
 pub mod plugins;
 pub mod proxy;
 pub mod query;
+pub mod race;
 pub mod scanner;
 pub mod scope;
 pub mod sender;

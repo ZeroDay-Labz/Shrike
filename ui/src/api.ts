@@ -60,6 +60,7 @@ export const api = {
   repeaterSend: (spec: RequestSpec) => invoke<SendResult>("repeater_send", { spec }),
   intruderStart: (config: IntruderConfig) => invoke<number>("intruder_start", { config }),
   intruderStop: (id: number) => invoke<void>("intruder_stop", { id }),
+  raceStart: (config: import("./types").RaceConfig) => invoke<number>("race_start", { config }),
   intruderPreview: (config: IntruderConfig) => invoke<PreviewResult>("intruder_preview", { config }),
   intruderGenerate: (generator: Generator) => invoke<string[]>("intruder_generate", { generator }),
   decodeChain: (input: string, ops: DecodeOp[]) => invoke<StepResult[]>("decode_chain", { input, ops }),

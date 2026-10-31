@@ -17,6 +17,7 @@ hudsucker.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 hyper-rustls.workspace = true
+tokio-rustls = "0.26"
 http-body-util.workspace = true
 bytes.workspace = true
 rcgen.workspace = true
