@@ -41,10 +41,10 @@ pub struct BrowserConfig {
     pub bin: PathBuf,
     pub engine: Engine,
     pub listen: SocketAddr,
-    /// base64(SHA-256(CA SubjectPublicKeyInfo)) — Chromium trusts certs chaining
+    /// base64(SHA-256(CA SubjectPublicKeyInfo)): Chromium trusts certs chaining
     /// to this one CA (and bypasses pinning). Unused for Firefox.
     pub spki_b64: String,
-    /// CA certificate PEM — installed into Firefox via an enterprise policy.
+    /// CA certificate PEM, installed into Firefox via an enterprise policy.
     pub ca_pem: String,
     pub profile_dir: PathBuf,
     pub start_url: String,
@@ -217,6 +217,12 @@ fn setup_firefox(cfg: &BrowserConfig) -> Result<()> {
     )
     .context("writing firefox user.js")?;
 
+    // Trust Shrike's CA. Primary: install it into the profile's cert9.db with
+    // certutil (writable, so it works even when the install dir is read-only, as
+    // in a packaged build). Fallback below: the enterprise policy next to the
+    // binary, which applies when that directory is writable (a dev run).
+    install_ca_into_profile(cfg);
+
     if let Some(dir) = cfg.bin.parent() {
         let dist = dir.join("distribution");
         let ca_path = dist.join("shrike-ca.pem");
@@ -237,6 +243,37 @@ fn setup_firefox(cfg: &BrowserConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Nickname for Shrike's CA in the Firefox profile's NSS database.
+const CA_NICKNAME: &str = "Shrike CA";
+
+/// Install Shrike's CA into the integrated Firefox profile's `cert9.db` with
+/// `certutil`. The profile lives in Shrike's data directory, which is always
+/// writable, so this trusts the CA even for installed packages whose resources
+/// (and thus the policy file) are read-only. No-op, with a hint, when `certutil`
+/// (nss-tools) is not installed; the policy file then covers writable installs.
+fn install_ca_into_profile(cfg: &BrowserConfig) {
+    if !crate::ca::trust::certutil_available() {
+        tracing::info!(
+            "certutil (nss-tools) not found; the integrated Firefox trusts Shrike's CA via the \
+             policy file on a writable install. Install nss-tools for automatic trust everywhere."
+        );
+        return;
+    }
+    let pem = cfg.profile_dir.join("shrike-ca.pem");
+    if let Err(e) = write_if_changed(&pem, cfg.ca_pem.as_bytes()) {
+        tracing::warn!(error = %e, "writing the CA for the Firefox profile failed");
+        return;
+    }
+    let db = crate::ca::trust::NssDatabase {
+        label: "integrated Firefox".into(),
+        dir: cfg.profile_dir.clone(),
+    };
+    match crate::ca::trust::trust_in_nss(&db, &pem, CA_NICKNAME) {
+        Ok(()) => tracing::info!("Shrike CA installed into the integrated Firefox profile"),
+        Err(e) => tracing::warn!(error = %e, "installing the CA into the Firefox profile failed"),
+    }
 }
 
 /// Write `content` only when it differs from what is on disk, so relaunching

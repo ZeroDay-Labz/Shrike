@@ -5,6 +5,15 @@ Burp Suite alternative, are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- The integrated Firefox now trusts Shrike's CA even in installed packages. The
+  CA is installed into the profile's NSS database (`cert9.db`) with `certutil`,
+  which is writable regardless of a read-only install directory, rather than
+  relying only on the enterprise policy file next to the binary. Requires
+  nss-tools; without it, the policy file still covers writable (dev) installs.
+
 ## [0.10.0] - 2026-11-01
 
 Headline: the integrated browser is now Firefox, fully open source, searchable
