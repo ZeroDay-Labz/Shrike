@@ -473,6 +473,31 @@ fn param_discovery_stop(state: State<AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn content_discovery_start(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    base_url: String,
+    words: Vec<String>,
+    extensions: Vec<String>,
+) -> CmdResult<()> {
+    let sink: std::sync::Arc<dyn Fn(shrike_engine::discovery::DiscoveryEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            let _ = app.emit("discovery-progress", ev);
+        });
+    off_main(&state, move |e| {
+        e.content_discovery_start(&base_url, words, extensions, sink)
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+fn content_discovery_stop(state: State<AppState>) -> CmdResult<()> {
+    state.engine.content_discovery_stop();
+    Ok(())
+}
+
+#[tauri::command]
 async fn traffic_stats(state: State<'_, AppState>) -> CmdResult<TrafficStats> {
     off_main(&state, |e| e.traffic_stats().map_err(err)).await
 }
@@ -1348,6 +1373,8 @@ pub fn run() {
             active_scan_stop,
             param_discovery_start,
             param_discovery_stop,
+            content_discovery_start,
+            content_discovery_stop,
             findings_list,
             finding_create,
             finding_update,

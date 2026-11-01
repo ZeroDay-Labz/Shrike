@@ -11,6 +11,7 @@ pub mod config;
 pub mod core;
 pub mod crawler;
 pub mod diagnostics;
+pub mod discovery;
 pub mod engine;
 pub mod extras;
 pub mod findings;

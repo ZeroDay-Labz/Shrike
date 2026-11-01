@@ -29,6 +29,9 @@ export const api = {
   activeScanStop: () => invoke<void>("active_scan_stop"),
   paramDiscoveryStart: (transactionId: number) => invoke<void>("param_discovery_start", { transactionId }),
   paramDiscoveryStop: () => invoke<void>("param_discovery_stop"),
+  contentDiscoveryStart: (baseUrl: string, words: string[], extensions: string[]) =>
+    invoke<void>("content_discovery_start", { baseUrl, words, extensions }),
+  contentDiscoveryStop: () => invoke<void>("content_discovery_stop"),
   findingsList: () => invoke<Finding[]>("findings_list"),
   findingCreate: (finding: NewFinding) => invoke<Finding>("finding_create", { finding }),
   findingUpdate: (id: number, update: FindingUpdate) =>
@@ -130,4 +133,6 @@ export const events = {
     listen("browser-closed", () => cb()),
   onOob: (cb: (hit: import("./types").OobInteraction) => void): Promise<UnlistenFn> =>
     listen<import("./types").OobInteraction>("oob-interaction", (e) => cb(e.payload)),
+  onDiscovery: (cb: (ev: import("./types").DiscoveryEvent) => void): Promise<UnlistenFn> =>
+    listen<import("./types").DiscoveryEvent>("discovery-progress", (e) => cb(e.payload)),
 };

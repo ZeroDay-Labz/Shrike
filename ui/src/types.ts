@@ -114,6 +114,21 @@ export interface OobInteraction {
   correlation_id: string;
 }
 
+export interface ContentHit {
+  path: string;
+  status: number;
+  length: number;
+  words: number;
+  redirect: string | null;
+}
+
+export type DiscoveryEvent =
+  | { type: "baseline"; status: number | null; length: number | null }
+  | ({ type: "found" } & ContentHit)
+  | { type: "progress"; done: number; total: number }
+  | { type: "finished"; found: number; stopped: boolean }
+  | { type: "error"; message: string };
+
 export interface BrowserStatus {
   pid: number;
   proxy: string;

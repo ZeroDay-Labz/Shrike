@@ -248,6 +248,8 @@ pub struct Engine {
     scan_stop: Mutex<Option<Arc<AtomicBool>>>,
     /// Cancellation flag for parameter discovery (one run at a time).
     param_stop: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cancellation flag for content discovery (one run at a time).
+    discovery_stop: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Engine {
@@ -328,6 +330,7 @@ impl Engine {
             crawl_stop: Mutex::new(None),
             scan_stop: Mutex::new(None),
             param_stop: Mutex::new(None),
+            discovery_stop: Mutex::new(None),
         });
         Ok(engine)
     }
@@ -704,6 +707,93 @@ impl Engine {
     /// Cancel parameter discovery, if any.
     pub fn param_discovery_stop(&self) {
         if let Some(stop) = self.param_stop.lock().expect("param lock").take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Content discovery: brute-force paths/files under a base URL. Scope-gated
+    /// (it sends traffic). `base_url` is the directory to enumerate under;
+    /// `extra_words` and `extensions` augment the built-in wordlist. Hits are
+    /// pushed to `sink` as [`crate::discovery::DiscoveryEvent`]s.
+    pub fn content_discovery_start(
+        &self,
+        base_url: &str,
+        extra_words: Vec<String>,
+        extensions: Vec<String>,
+        sink: Arc<dyn Fn(crate::discovery::DiscoveryEvent) + Send + Sync>,
+    ) -> Result<()> {
+        let uri: http::Uri = base_url
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("invalid target URL: {e}"))?;
+        let scheme = uri.scheme_str().unwrap_or("http");
+        let secure = scheme.eq_ignore_ascii_case("https");
+        let host = uri
+            .host()
+            .ok_or_else(|| anyhow!("target URL has no host (use http(s)://host/path)"))?
+            .to_string();
+        let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+        let base_path = {
+            let p = uri.path();
+            if p.is_empty() {
+                "/".to_string()
+            } else {
+                p.to_string()
+            }
+        };
+        let service = HttpService {
+            host: host.clone(),
+            port,
+            secure,
+        };
+
+        // Hard scope gate (sends traffic, like the active scanner).
+        {
+            let scope = self.scope.read().expect("scope lock");
+            if scope.is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty — add the target host to the engagement scope before \
+                     content discovery"
+                ));
+            }
+            if !scope.in_scope(&service, &base_path) {
+                return Err(anyhow!(
+                    "that target is out of the engagement scope; content discovery is refused"
+                ));
+            }
+        }
+
+        let mut words: Vec<String> = crate::discovery::DEFAULT_WORDLIST
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        words.extend(extra_words);
+
+        let base = RequestSpec {
+            service,
+            method: "GET".into(),
+            target: base_path,
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        self.content_discovery_stop();
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.discovery_stop.lock().expect("discovery lock") = Some(Arc::clone(&stop));
+        let config = crate::discovery::ContentDiscoveryConfig {
+            concurrency: self.config().active_scan_concurrency,
+            extensions,
+        };
+        let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
+        self.runtime.spawn(async move {
+            crate::discovery::run_content_discovery(base, words, sender, stop, config, sink).await;
+        });
+        Ok(())
+    }
+
+    /// Cancel content discovery, if any.
+    pub fn content_discovery_stop(&self) {
+        if let Some(stop) = self.discovery_stop.lock().expect("discovery lock").take() {
             stop.store(true, Ordering::Relaxed);
         }
     }
