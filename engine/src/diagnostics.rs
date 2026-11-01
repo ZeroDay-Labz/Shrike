@@ -49,11 +49,14 @@ const CLIENT_REJECTED_CERT: [&str; 4] = [
 /// Benign TLS/connection noise from the proxy plumbing: a peer closed the
 /// connection mid-handshake, a client hung up, etc. Not actionable, so swallow
 /// it rather than logging a scary ERROR on every dropped connection.
-const BENIGN_TLS_NOISE: [&str; 4] = [
+const BENIGN_TLS_NOISE: [&str; 5] = [
     "handshake eof",
     "UnexpectedEof",
     "unexpected end of file",
     "connection reset",
+    // Client (browser) hung up mid-request: canceled navigations, closed tabs,
+    // speculative preconnects, or a request held while Intercept is on.
+    "broken pipe",
 ];
 
 fn is_benign_tls_noise(event: &Event<'_>) -> bool {
@@ -146,6 +149,31 @@ mod tests {
         );
         assert!(out.contains("Failed to connect to example.com"));
         assert!(out.contains("must not be swallowed"));
+    }
+
+    #[test]
+    fn swallows_benign_connection_noise() {
+        let layer = FriendlyTlsErrors::with_sink(std::path::Path::new("/tmp/ca.pem"), |_| {});
+        let printed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let p = Arc::clone(&printed);
+        let recorder = tracing_subscriber::fmt::layer()
+            .with_writer(move || Recorder(Arc::clone(&p)))
+            .with_ansi(false);
+        let subscriber = tracing_subscriber::registry().with(recorder).with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            // A client that hung up mid-request (canceled nav, closed tab, held
+            // intercept) surfaces as a broken pipe; it is not an error.
+            tracing::error!(target: "hudsucker::proxy::internal", error = "connection error", error.sources = "broken pipe", "HTTPS connect error");
+            tracing::error!(target: "shrike_engine::proxy", "a real engine error stays");
+        });
+
+        let out = printed.lock().unwrap().join("");
+        assert!(
+            !out.contains("broken pipe"),
+            "benign broken pipe swallowed: {out}"
+        );
+        assert!(out.contains("a real engine error stays"));
     }
 
     struct Recorder(Arc<Mutex<Vec<String>>>);

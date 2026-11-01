@@ -346,6 +346,11 @@ pub fn launch(cfg: &BrowserConfig) -> Result<Child> {
             cmd.env("FONTCONFIG_PATH", sys);
         }
     }
+    // Disable the GTK/ATK accessibility bridge, which otherwise spams the console
+    // with harmless "text_caret_moved"/GObject-CRITICAL warnings under Firefox on
+    // some Linux desktops. It is not needed for an isolated testing browser.
+    cmd.env("NO_AT_BRIDGE", "1");
+    cmd.env("GTK_A11Y", "none");
     cmd.spawn()
         .with_context(|| format!("launching {}", cfg.bin.display()))
 }
