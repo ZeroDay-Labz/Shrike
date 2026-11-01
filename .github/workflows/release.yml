@@ -30,9 +30,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux (deb, rpm, AppImage, tar.gz)
+          # AppImage is omitted for now: linuxdeploy fails on the bundled Firefox.
+          # deb, rpm, the portable tarball and Flatpak cover Linux meanwhile.
+          - name: Linux (deb, rpm, tar.gz)
             os: ubuntu-22.04
-            targets: deb,rpm,appimage
+            targets: deb,rpm
           - name: Windows (exe)
             os: windows-latest
             targets: nsis
@@ -102,7 +104,6 @@ jobs:
             | Windows 10/11 (x64) | `Shrike_<version>_x64-setup.exe` |
             | Debian / Ubuntu | `Shrike_<version>_amd64.deb` |
             | Fedora / RHEL / openSUSE | `Shrike-<version>-1.x86_64.rpm` |
-            | Any Linux (AppImage) | `Shrike_<version>_amd64.AppImage` |
             | Any Linux (portable) | `shrike-<version>-linux-x86_64.tar.gz` |
             | Any Linux (Flatpak) | `shrike.flatpak` |
 

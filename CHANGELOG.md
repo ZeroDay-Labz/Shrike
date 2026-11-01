@@ -29,6 +29,8 @@ out of the box, and configured with Shrike's proxy and CA automatically.
 - Release notes are now curated and SEO-focused, and a CHANGELOG is maintained.
 
 ### Known issues
+- The AppImage is not published this release: linuxdeploy fails on the bundled
+  Firefox. Use the `.deb`, `.rpm`, the portable `.tar.gz` or the Flatpak instead.
 - In installed packages the resources directory is read-only, so the Firefox CA
   policy cannot be written there yet; the CA is not auto-trusted in installed
   builds (a dev run is fine). Installing the CA into the Firefox profile via
