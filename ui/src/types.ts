@@ -129,6 +129,30 @@ export type DiscoveryEvent =
   | { type: "finished"; found: number; stopped: boolean }
   | { type: "error"; message: string };
 
+export interface TemplateSummary {
+  id: string;
+  name: string;
+  severity: string;
+  author: string;
+  description: string;
+  tags: string[];
+  builtin: boolean;
+}
+
+export interface TemplateMatch {
+  template_id: string;
+  name: string;
+  severity: string;
+  path: string;
+  extracted: string[];
+}
+
+export type TemplateEvent =
+  | ({ type: "match" } & TemplateMatch)
+  | { type: "progress"; done: number; total: number }
+  | { type: "finished"; matched: number; stopped: boolean }
+  | { type: "error"; message: string };
+
 export interface BrowserStatus {
   pid: number;
   proxy: string;

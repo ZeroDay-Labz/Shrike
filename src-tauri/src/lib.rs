@@ -498,6 +498,36 @@ fn content_discovery_stop(state: State<AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn templates_list(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<shrike_engine::templates::TemplateSummary>> {
+    off_main(&state, |e| Ok(e.templates_list())).await
+}
+
+#[tauri::command]
+async fn templates_scan_start(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    base_url: String,
+    only: Vec<String>,
+) -> CmdResult<()> {
+    let sink: std::sync::Arc<dyn Fn(shrike_engine::templates::TemplateEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            let _ = app.emit("template-progress", ev);
+        });
+    off_main(&state, move |e| {
+        e.templates_scan_start(&base_url, only, sink).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+fn templates_scan_stop(state: State<AppState>) -> CmdResult<()> {
+    state.engine.templates_scan_stop();
+    Ok(())
+}
+
+#[tauri::command]
 async fn traffic_stats(state: State<'_, AppState>) -> CmdResult<TrafficStats> {
     off_main(&state, |e| e.traffic_stats().map_err(err)).await
 }
@@ -1375,6 +1405,9 @@ pub fn run() {
             param_discovery_stop,
             content_discovery_start,
             content_discovery_stop,
+            templates_list,
+            templates_scan_start,
+            templates_scan_stop,
             findings_list,
             finding_create,
             finding_update,

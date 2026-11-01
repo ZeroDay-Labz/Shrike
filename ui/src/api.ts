@@ -32,6 +32,10 @@ export const api = {
   contentDiscoveryStart: (baseUrl: string, words: string[], extensions: string[]) =>
     invoke<void>("content_discovery_start", { baseUrl, words, extensions }),
   contentDiscoveryStop: () => invoke<void>("content_discovery_stop"),
+  templatesList: () => invoke<import("./types").TemplateSummary[]>("templates_list"),
+  templatesScanStart: (baseUrl: string, only: string[]) =>
+    invoke<void>("templates_scan_start", { baseUrl, only }),
+  templatesScanStop: () => invoke<void>("templates_scan_stop"),
   findingsList: () => invoke<Finding[]>("findings_list"),
   findingCreate: (finding: NewFinding) => invoke<Finding>("finding_create", { finding }),
   findingUpdate: (id: number, update: FindingUpdate) =>
@@ -135,4 +139,6 @@ export const events = {
     listen<import("./types").OobInteraction>("oob-interaction", (e) => cb(e.payload)),
   onDiscovery: (cb: (ev: import("./types").DiscoveryEvent) => void): Promise<UnlistenFn> =>
     listen<import("./types").DiscoveryEvent>("discovery-progress", (e) => cb(e.payload)),
+  onTemplate: (cb: (ev: import("./types").TemplateEvent) => void): Promise<UnlistenFn> =>
+    listen<import("./types").TemplateEvent>("template-progress", (e) => cb(e.payload)),
 };

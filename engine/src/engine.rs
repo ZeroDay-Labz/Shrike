@@ -250,6 +250,8 @@ pub struct Engine {
     param_stop: Mutex<Option<Arc<AtomicBool>>>,
     /// Cancellation flag for content discovery (one run at a time).
     discovery_stop: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cancellation flag for a templated scan (one run at a time).
+    templates_stop: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Engine {
@@ -331,6 +333,7 @@ impl Engine {
             scan_stop: Mutex::new(None),
             param_stop: Mutex::new(None),
             discovery_stop: Mutex::new(None),
+            templates_stop: Mutex::new(None),
         });
         Ok(engine)
     }
@@ -794,6 +797,140 @@ impl Engine {
     /// Cancel content discovery, if any.
     pub fn content_discovery_stop(&self) {
         if let Some(stop) = self.discovery_stop.lock().expect("discovery lock").take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The templates directory (built-in templates ship in-binary; user
+    /// templates are JSON files dropped here).
+    pub fn templates_dir(&self) -> std::path::PathBuf {
+        self.config().data_dir.join("templates")
+    }
+
+    /// Load built-in + user templates and return their summaries for the UI.
+    pub fn templates_list(&self) -> Vec<crate::templates::TemplateSummary> {
+        let (builtin, user, errors) = crate::templates::load_templates(&self.templates_dir());
+        for e in &errors {
+            warn!(error = %e, "template load error");
+        }
+        builtin
+            .iter()
+            .map(|t| t.summary(true))
+            .chain(user.iter().map(|t| t.summary(false)))
+            .collect()
+    }
+
+    /// Run templates against a target URL. Scope-gated (it sends traffic).
+    /// `only` restricts to those template ids (empty = all loaded). Matches are
+    /// pushed to `sink` and filed as Findings.
+    pub fn templates_scan_start(
+        &self,
+        base_url: &str,
+        only: Vec<String>,
+        sink: Arc<dyn Fn(crate::templates::TemplateEvent) + Send + Sync>,
+    ) -> Result<()> {
+        let uri: http::Uri = base_url
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("invalid target URL: {e}"))?;
+        let scheme = uri.scheme_str().unwrap_or("http");
+        let secure = scheme.eq_ignore_ascii_case("https");
+        let host = uri
+            .host()
+            .ok_or_else(|| anyhow!("target URL has no host (use http(s)://host)"))?
+            .to_string();
+        let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+        let service = HttpService {
+            host: host.clone(),
+            port,
+            secure,
+        };
+        let base_path = {
+            let p = uri.path();
+            if p.is_empty() { "/" } else { p }
+        };
+        {
+            let scope = self.scope.read().expect("scope lock");
+            if scope.is_empty() {
+                return Err(anyhow!(
+                    "target scope is empty — add the target host to the engagement scope before \
+                     running templates"
+                ));
+            }
+            if !scope.in_scope(&service, base_path) {
+                return Err(anyhow!(
+                    "that target is out of the engagement scope; the templated scan is refused"
+                ));
+            }
+        }
+        // Normalised interpolation root: scheme://host[:port], no trailing slash.
+        let host_port = if (secure && port == 443) || (!secure && port == 80) {
+            host.clone()
+        } else {
+            format!("{host}:{port}")
+        };
+        let root = format!("{scheme}://{host_port}");
+
+        let (builtin, user, errors) = crate::templates::load_templates(&self.templates_dir());
+        for e in &errors {
+            warn!(error = %e, "template load error");
+        }
+        let mut templates: Vec<_> = builtin.into_iter().chain(user).collect();
+        if !only.is_empty() {
+            templates.retain(|t| only.contains(&t.id));
+        }
+        if templates.is_empty() {
+            return Err(anyhow!("no templates to run"));
+        }
+
+        self.templates_scan_stop();
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.templates_stop.lock().expect("templates lock") = Some(Arc::clone(&stop));
+        let config = crate::templates::TemplateScanConfig {
+            concurrency: self.config().active_scan_concurrency,
+        };
+        let sender = Arc::clone(&*self.sender.read().expect("sender lock"));
+        let store = Arc::clone(&self.store);
+        let bus = self.ingest.clone();
+        self.runtime.spawn(async move {
+            let matches = crate::templates::run_templates(
+                root, service, templates, sender, stop, config, sink,
+            )
+            .await;
+            for m in matches {
+                let detail = if m.extracted.is_empty() {
+                    format!("Template '{}' matched at {}.", m.template_id, m.path)
+                } else {
+                    format!(
+                        "Template '{}' matched at {}. Extracted: {}",
+                        m.template_id,
+                        m.path,
+                        m.extracted.join(", ")
+                    )
+                };
+                let nf = crate::findings::NewFinding {
+                    title: m.name.clone(),
+                    severity: crate::findings::Severity::parse(&m.severity),
+                    confidence: crate::findings::Confidence::Firm,
+                    detail,
+                    host: Some(host.clone()),
+                    path: Some(m.path.clone()),
+                    transaction_ids: vec![],
+                };
+                let key = format!("tpl:{}|{}|{}", m.template_id, host, m.path);
+                match store.finding_create_deduped(nf, &key) {
+                    Ok(Some(f)) => bus.emit(TrafficEvent::FindingAdded(Arc::new(f))),
+                    Ok(None) => {}
+                    Err(e) => warn!(error = %e, "template finding insert failed"),
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Cancel the templated scan, if any.
+    pub fn templates_scan_stop(&self) {
+        if let Some(stop) = self.templates_stop.lock().expect("templates lock").take() {
             stop.store(true, Ordering::Relaxed);
         }
     }

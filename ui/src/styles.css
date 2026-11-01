@@ -1013,3 +1013,47 @@ body.sp-dragging, body.sp-dragging * { user-select: none !important; }
 .disco-table .mono { font-family: var(--mono); }
 .disco-status { font-weight: 700; font-family: var(--mono); }
 .disco-redir { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- Templated scanner --- */
+.tpl { display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: hidden; padding: 20px 24px; }
+.tpl-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.tpl-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tpl-title h2 { margin: 0; font-size: 17px; }
+.tpl-title .mut { font-size: 12px; }
+.tpl-form { display: flex; gap: 10px; align-items: center; }
+.tpl-url { flex: 1 1 auto; font-family: var(--mono); font-size: 12.5px; padding: 7px 10px;
+  background: var(--field); border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--fg); }
+.tpl-statusbar { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--mut); }
+.tpl-prog { display: flex; align-items: center; gap: 8px; }
+.tpl-bar { width: 140px; height: 6px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line-2); overflow: hidden; }
+.tpl-fill { display: block; height: 100%; background: var(--brand); transition: width .2s ease; }
+.tpl-matched { color: var(--fg); }
+.tpl-body { display: flex; gap: 14px; flex: 1 1 auto; min-height: 0; }
+.tpl-list { flex: 0 0 340px; display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface-1); }
+.tpl-list-bar { padding: 8px 12px; border-bottom: 1px solid var(--line-2); }
+.tpl-selall { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mut); cursor: pointer; }
+.tpl-list-scroll { flex: 1 1 auto; overflow-y: auto; }
+.tpl-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid var(--line-2); }
+.tpl-item:hover { background: var(--surface-2); }
+.tpl-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-user { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--brand);
+  border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent); border-radius: 999px; padding: 0 5px; }
+.tpl-tags { display: flex; gap: 4px; flex: 0 0 auto; }
+.tpl-tag { font-size: 9.5px; color: var(--mut); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 0 4px; }
+.tpl-hint { padding: 8px 12px; font-size: 11px; border-top: 1px solid var(--line-2); margin: 0; }
+.tpl-hint code { font-family: var(--mono); background: var(--field); padding: 0 4px; border-radius: 3px; }
+.tpl-matches { flex: 1 1 auto; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--r); }
+.tpl-match-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tpl-match-table thead th { position: sticky; top: 0; text-align: left; font-weight: 600; color: var(--mut);
+  background: var(--surface-2); border-bottom: 1px solid var(--line-2); padding: 7px 12px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .03em; }
+.tpl-match-table td { padding: 6px 12px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+.tpl-match-table .mono { font-family: var(--mono); }
+.tpl-sev { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-2); flex: 0 0 auto; }
+.tpl-sev.sev-critical { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: var(--danger-weak); }
+.tpl-sev.sev-high { color: var(--s4); border-color: color-mix(in srgb, var(--s4) 45%, transparent); }
+.tpl-sev.sev-medium { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-weak); }
+.tpl-sev.sev-low { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 40%, transparent); background: var(--brand-weak); }
+.tpl-sev.sev-info { color: var(--mut); }

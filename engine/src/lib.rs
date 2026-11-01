@@ -29,5 +29,6 @@ pub mod scanner;
 pub mod scope;
 pub mod sender;
 pub mod store;
+pub mod templates;
 pub mod tools;
 pub use engine::Engine;
