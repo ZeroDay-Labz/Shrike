@@ -5,6 +5,35 @@ Burp Suite alternative, are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.10.0] - 2026-11-01
+
+Headline: the integrated browser is now Firefox, fully open source, searchable
+out of the box, and configured with Shrike's proxy and CA automatically.
+
+### Added
+- **Firefox is the integrated browser**, bundled into the app. On launch Shrike
+  generates an isolated profile (a `user.js` that sets the proxy and a quiet
+  testing configuration) and an enterprise `policies.json` that installs Shrike's
+  CA, so HTTPS is intercepted with no prompts and the address-bar search works
+  immediately. A Chromium-family browser remains a runtime fallback.
+
+### Changed
+- The integrated browser no longer floods the proxy history on startup: Firefox's
+  background phone-home (Safe Browsing, telemetry, Normandy, remote-settings
+  blocklist, captive-portal checks, Pocket/activity-stream, suggestions, prefetch)
+  is disabled in the generated profile.
+- The Extender panel reports context-menu, passive-scan and legacy HTTP-listener
+  hooks as wired and active (they were shown as unsupported).
+- Extension scan checks are gated to textual responses, so running extensions do
+  not slow down browsing with per-asset round-trips to the JVM.
+- Release notes are now curated and SEO-focused, and a CHANGELOG is maintained.
+
+### Known issues
+- In installed packages the resources directory is read-only, so the Firefox CA
+  policy cannot be written there yet; the CA is not auto-trusted in installed
+  builds (a dev run is fine). Installing the CA into the Firefox profile via
+  certutil is the planned fix.
+
 ## [0.9.0] - 2026-11-01
 
 Headline: Shrike can now confirm blind vulnerabilities, discover hidden content, and run
