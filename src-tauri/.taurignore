@@ -1,5 +1,4 @@
-# Keep `tauri dev` snappy. The integrated Chromium is a large, runtime-fetched
-# resource (not source); a one-click browser download must not trigger a full
-# Rust rebuild. (Tauri reads bundled resources at runtime in dev, so the app
-# still picks up changes on relaunch.)
-resources/chromium/
+# Paths the `tauri dev` file watcher ignores (gitignore syntax, relative to
+# src-tauri). Bundled browser resources are written to at launch (the CA policy
+# for Firefox), so watching them would relaunch the app in a loop.
+resources/

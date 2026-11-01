@@ -140,9 +140,9 @@ pub fn firefox_policies_json(ca_path: &Path) -> String {
 fn setup_firefox(cfg: &BrowserConfig) -> Result<()> {
     std::fs::create_dir_all(&cfg.profile_dir)
         .with_context(|| format!("creating browser profile {}", cfg.profile_dir.display()))?;
-    std::fs::write(
-        cfg.profile_dir.join("user.js"),
-        firefox_user_js(cfg.listen, &cfg.start_url),
+    write_if_changed(
+        &cfg.profile_dir.join("user.js"),
+        firefox_user_js(cfg.listen, &cfg.start_url).as_bytes(),
     )
     .context("writing firefox user.js")?;
 
@@ -150,9 +150,12 @@ fn setup_firefox(cfg: &BrowserConfig) -> Result<()> {
         let dist = dir.join("distribution");
         let ca_path = dist.join("shrike-ca.pem");
         let write = std::fs::create_dir_all(&dist)
-            .and_then(|_| std::fs::write(&ca_path, &cfg.ca_pem))
+            .and_then(|_| write_if_changed(&ca_path, cfg.ca_pem.as_bytes()))
             .and_then(|_| {
-                std::fs::write(dist.join("policies.json"), firefox_policies_json(&ca_path))
+                write_if_changed(
+                    &dist.join("policies.json"),
+                    firefox_policies_json(&ca_path).as_bytes(),
+                )
             });
         if let Err(e) = write {
             tracing::warn!(
@@ -163,6 +166,15 @@ fn setup_firefox(cfg: &BrowserConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Write `content` only when it differs from what is on disk, so relaunching
+/// does not rewrite (and touch the mtime of) unchanged policy/profile files.
+fn write_if_changed(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    if std::fs::read(path).ok().as_deref() == Some(content) {
+        return Ok(());
+    }
+    std::fs::write(path, content)
 }
 
 /// Firefox command-line arguments: an isolated, single instance opened at `start_url`.
