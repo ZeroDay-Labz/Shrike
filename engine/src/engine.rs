@@ -1254,46 +1254,61 @@ impl Engine {
 
     // --- integrated browser ---
 
-    /// True if a Chromium binary is available (the bundled one passed as `bin`,
-    /// else a system one / the configured override).
+    /// True if an integrated browser is available (the bundled one passed as
+    /// `bin`, else a system Firefox, else a Chromium-family fallback / override).
     pub fn browser_available(&self, bin: Option<std::path::PathBuf>) -> bool {
         if bin.as_ref().is_some_and(|p| p.is_file()) {
             return true;
         }
         let override_path = self.config().chromium_path;
-        browser::find_system_chromium(override_path.as_deref()).is_some()
+        browser::find_system_firefox(override_path.as_deref()).is_some()
+            || browser::find_system_chromium(override_path.as_deref()).is_some()
     }
 
     /// Launch the integrated browser, pre-configured to proxy through Shrike with
-    /// the CA trusted and an isolated profile. `bin` is the bundled Chromium path
-    /// resolved by the GUI; when `None`, a system/override Chromium is used. Starts
-    /// the proxy first if it is not already running.
+    /// the CA trusted and an isolated profile. `bin` is the bundled browser path
+    /// resolved by the GUI; when `None`, a system Firefox is preferred, then a
+    /// Chromium-family fallback. Starts the proxy first if it is not running.
     pub fn launch_browser(&self, bin: Option<std::path::PathBuf>) -> Result<BrowserStatus> {
-        let chromium_bin = match bin.filter(|p| p.is_file()) {
+        let override_path = self.config().chromium_path;
+        let browser_bin = match bin.filter(|p| p.is_file()) {
             Some(p) => p,
-            None => {
-                let override_path = self.config().chromium_path;
-                browser::find_system_chromium(override_path.as_deref()).ok_or_else(|| {
+            None => browser::find_system_firefox(override_path.as_deref())
+                .or_else(|| browser::find_system_chromium(override_path.as_deref()))
+                .ok_or_else(|| {
                     anyhow!(
-                        "no Chromium found. Install Chromium/Chrome, or set a path in \
-                         Settings → Chromium path."
+                        "no browser found. Install Firefox (or a Chromium-family browser), \
+                         or set a path in Settings."
                     )
-                })?
-            }
+                })?,
         };
+        let engine = browser::detect_engine(&browser_bin);
 
         let listen = match self.local_addr() {
             Some(addr) => addr,
             None => self.start_proxy()?,
         };
 
-        let profile_dir = self.config().data_dir.join("browser-profile");
+        // Chromium and Firefox profiles are not interchangeable; keep them apart.
+        let profile_dir = self.config().data_dir.join(match engine {
+            browser::Engine::Firefox => "browser-profile-firefox",
+            browser::Engine::Chromium => "browser-profile",
+        });
+        // Firefox has its own searchable home page; Chromium opens the Shrike
+        // landing page (which also offers the CA download for other browsers).
+        let start_url = match engine {
+            browser::Engine::Firefox => "about:home",
+            browser::Engine::Chromium => "http://shrike/",
+        }
+        .to_string();
         let cfg = BrowserConfig {
-            chromium_bin: chromium_bin.clone(),
+            bin: browser_bin.clone(),
+            engine,
             listen,
             spki_b64: self.ca.spki_sha256_base64().to_string(),
+            ca_pem: self.ca.ca_cert_pem().to_string(),
             profile_dir: profile_dir.clone(),
-            start_url: "http://shrike/".to_string(),
+            start_url,
         };
         let mut child = browser::launch(&cfg)?;
         let pid = child.id();
@@ -1311,12 +1326,13 @@ impl Engine {
                 hook();
             }
         });
-        info!(pid, %listen, "integrated browser launched");
+        info!(pid, %listen, engine = engine.as_str(), "integrated browser launched");
         Ok(BrowserStatus {
             pid,
             proxy: listen.to_string(),
             profile: profile_dir.display().to_string(),
-            chromium: chromium_bin.display().to_string(),
+            browser: browser_bin.display().to_string(),
+            engine: engine.as_str().to_string(),
         })
     }
 

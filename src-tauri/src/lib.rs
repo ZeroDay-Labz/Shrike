@@ -1198,13 +1198,59 @@ fn resolve_bundled_chromium(app: &AppHandle) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Resolve the bundled Firefox binary from the app's resources, if present.
+/// Mirrors [`resolve_bundled_chromium`] but under `resources/firefox`.
+fn resolve_bundled_firefox(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let candidates: &[&str] = if cfg!(target_os = "windows") {
+        &["firefox.exe", "firefox\\firefox.exe"]
+    } else if cfg!(target_os = "macos") {
+        &[
+            "Firefox.app/Contents/MacOS/firefox",
+            "firefox/Firefox.app/Contents/MacOS/firefox",
+        ]
+    } else {
+        &["firefox", "firefox/firefox"]
+    };
+
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        bases.push(res.join("firefox"));
+    }
+    bases.push(std::path::PathBuf::from(
+        "/app/share/shrike/resources/firefox",
+    ));
+    if let Ok(cwd) = std::env::current_dir() {
+        bases.extend(
+            cwd.ancestors()
+                .map(|p| p.join("src-tauri/resources/firefox")),
+        );
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        bases.extend(
+            exe.ancestors()
+                .map(|p| p.join("src-tauri/resources/firefox")),
+        );
+    }
+
+    bases
+        .iter()
+        .flat_map(|base| candidates.iter().map(move |c| base.join(c)))
+        .find(|p| p.is_file())
+}
+
+/// The bundled integrated browser: Firefox when present, else the Chromium
+/// fallback. `None` leaves the engine to find a system browser.
+fn resolve_bundled_browser(app: &AppHandle) -> Option<std::path::PathBuf> {
+    resolve_bundled_firefox(app).or_else(|| resolve_bundled_chromium(app))
+}
+
 #[tauri::command]
 async fn launch_browser(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> CmdResult<shrike_engine::browser::BrowserStatus> {
-    // May start the proxy first, then spawns Chromium.
-    let bin = resolve_bundled_chromium(&app);
+    // May start the proxy first, then spawns the browser (Firefox, else Chromium).
+    let bin = resolve_bundled_browser(&app);
     off_main(&state, move |e| e.launch_browser(bin).map_err(err)).await
 }
 
@@ -1212,7 +1258,7 @@ async fn launch_browser(
 fn browser_available(state: State<AppState>, app: AppHandle) -> bool {
     state
         .engine
-        .browser_available(resolve_bundled_chromium(&app))
+        .browser_available(resolve_bundled_browser(&app))
 }
 
 /// Validate a URL we're about to hand to the OS opener: http(s) only, a real

@@ -136,8 +136,8 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
 
         <section className="settings-card">
           <h3>Integrations</h3>
-          <label>Integrated browser — Chromium path (optional)
-            <input value={chromiumPath} placeholder="leave blank to use the bundled / system Chromium"
+          <label>Integrated browser path (optional)
+            <input value={chromiumPath} placeholder="leave blank to use the bundled Firefox (or a system Firefox/Chromium)"
               onChange={(e) => setChromiumPath(e.target.value)} />
           </label>
           <label>GitHub token for the extension catalog (optional)

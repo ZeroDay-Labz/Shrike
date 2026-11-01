@@ -157,7 +157,8 @@ export interface BrowserStatus {
   pid: number;
   proxy: string;
   profile: string;
-  chromium: string;
+  browser: string;
+  engine: string;
 }
 
 export type RuleKind = "include" | "exclude";

@@ -44,7 +44,7 @@ export function TopBar(props: {
   async function openBrowser() {
     try {
       const s = await api.launchBrowser();
-      const name = s.chromium.split(/[\\/]/).pop() || "Chromium";
+      const name = s.engine === "firefox" ? "Firefox" : "Chromium";
       setBrowserOn(true);
       toast(`Browser launched (${name}), proxying through ${s.proxy}`, "success");
     } catch (e) { toast(String(e), "error"); }
