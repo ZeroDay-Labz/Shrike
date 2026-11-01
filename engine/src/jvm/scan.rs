@@ -146,6 +146,14 @@ fn scan_one(
     let Some(resp) = txn.response.as_ref() else {
         return;
     };
+    // Only round-trip for responses a passive scan check would actually look at:
+    // textual bodies (HTML/JSON/XML/JS/text). This skips the flood of images,
+    // fonts, media and other binary assets a browser pulls per page, which keeps
+    // the JVM (and browsing) responsive while extensions are running. Mirrors how
+    // the native passive scanner gates its own checks on content type.
+    if !crate::scanner::is_texty(resp.content_type()) || resp.body.is_empty() {
+        return;
+    }
     // Snapshot the hosts that registered a scan check, then drop the locks before
     // the blocking round-trips so scanning never stalls live traffic.
     let targets: Vec<(String, String, Arc<ServeHost>)> = {

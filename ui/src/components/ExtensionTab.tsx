@@ -29,11 +29,13 @@ export function ExtensionTab(props: {
   const registered = meta?.registered ?? installed?.registered ?? [];
   const hooks = registered.filter((r) => !r.startsWith("suiteTab:"));
   // What the host delivers today: logging output, standalone Swing UI windows,
-  // and — through the traffic bridge — the Montoya HTTP handlers, which receive
-  // and can modify live proxy traffic. Context-menu, scanner and legacy
-  // (Python/listener) hooks are recorded but not yet wired, so label them
+  // and, through the bridges, the Montoya and legacy HTTP handlers (live traffic),
+  // context-menu providers/factories (right-click actions), passive scan checks
+  // (issues become Findings), and legacy HTTP listeners. WebSocket, message-editor
+  // and top-level suite-menu hooks are recorded but not wired yet, so label them
   // honestly rather than implying they work.
-  const WIRED = /logging|output|print|HttpHandler|ResponseHandler|ProxyRequestHandler|ProxyResponseHandler/i;
+  const WIRED =
+    /logging|output|print|HttpHandler|ResponseHandler|ProxyRequestHandler|ProxyResponseHandler|ContextMenu|ScanCheck|ScannerCheck|HttpListener|ExtensionStateListener/i;
   const wired = hooks.filter((h) => WIRED.test(h));
   const notWired = hooks.filter((h) => !WIRED.test(h));
   const tabs = meta?.suite_tabs
@@ -64,7 +66,7 @@ export function ExtensionTab(props: {
       {tabs.length > 0 && (
         <div className="exttab-note">
           Registered UI tab{tabs.length === 1 ? "" : "s"}: <b>{tabs.join(", ")}</b>. Java Swing UIs
-          open in their own window — bring it forward from your window switcher.
+          open in their own window; bring it forward from your window switcher.
         </div>
       )}
 
@@ -76,16 +78,17 @@ export function ExtensionTab(props: {
             {tabs.map((t) => <span className="ext-hook" key={"t" + t} title="Opens as a standalone window">UI tab: {t}</span>)}
             {wired.map((h) => <span className="ext-hook" key={h} title="Active">{h.replace(/^register/, "")}</span>)}
             {notWired.map((h) => (
-              <span className="ext-hook not-wired" key={h} title="Registered by the extension, but not yet connected to Shrike's traffic — coming with the extension bridge">
+              <span className="ext-hook not-wired" key={h} title="Registered by the extension, but not yet connected to Shrike's traffic">
                 {h.replace(/^register/, "")}
               </span>
             ))}
           </div>
           {notWired.length > 0 && (
             <div className="exttab-note warn">
-              The extension's HTTP handlers (if any) process live traffic. The
-              remaining hooks above ({notWired.length}) — context-menu, scanner and
-              legacy listener hooks — aren't wired yet; support is in progress.
+              HTTP handlers, context-menu items, passive scan checks and legacy HTTP
+              listeners are wired and active. The remaining hooks above ({notWired.length}) are
+              recorded but not connected to Shrike's traffic yet (for example WebSocket,
+              message-editor and top-level menu hooks); support is in progress.
             </div>
           )}
         </div>
@@ -93,7 +96,7 @@ export function ExtensionTab(props: {
 
       <div className="exttab-label">Output</div>
       <div className="exttab-log" ref={logRef}>
-        {logs.length === 0 && <div className="hint">no output yet — logs stream here while the extension runs</div>}
+        {logs.length === 0 && <div className="hint">no output yet; logs stream here while the extension runs</div>}
         {logs.map((l, i) => (
           <div key={i} className={"exttab-line" + (l.stream === "err" ? " err" : "")}>{l.line}</div>
         ))}
