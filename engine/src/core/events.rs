@@ -44,6 +44,10 @@ pub enum TrafficEvent {
     /// A finding was recorded (by the operator or a scanner). Carried on the bus
     /// so the GUI bridge can push it live, regardless of which source raised it.
     FindingAdded(Arc<crate::findings::Finding>),
+    /// An out-of-band callback reached the OOB interaction server (a DNS or HTTP
+    /// hit on the tester's payload domain). Pushed live so the UI updates as
+    /// blind payloads fire.
+    Oob(Arc<crate::oob::OobInteraction>),
 }
 
 /// Consumer of traffic events. Runs on the bus task, so keep work short or
@@ -226,6 +230,12 @@ impl TrafficSink for StdoutSink {
                 }
             }
             TrafficEvent::FindingAdded(_) => {}
+            TrafficEvent::Oob(hit) => {
+                println!(
+                    "      OOB {} from {} ({})",
+                    hit.kind, hit.source, hit.detail
+                );
+            }
             TrafficEvent::Intercepted { id, service, .. } => {
                 println!("      HOLD #{id} {service} (intercepted, awaiting decision)");
             }

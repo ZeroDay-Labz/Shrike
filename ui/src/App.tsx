@@ -21,6 +21,7 @@ import { Dashboard } from "./components/Dashboard";
 import { Sequencer } from "./components/Sequencer";
 import { Extender } from "./components/Extender";
 import { ExtensionTab } from "./components/ExtensionTab";
+import { Interactions } from "./components/Interactions";
 import { Jwt } from "./components/Jwt";
 import { Findings } from "./components/Findings";
 import { Extras } from "./components/Extras";
@@ -42,6 +43,7 @@ const TOOLS: Tool[] = [
   { id: "logger", label: "Logger", icon: "logger", group: "Capture" },
   { id: "intruder", label: "Intruder", icon: "intruder", group: "Attack" },
   { id: "repeater", label: "Repeater", icon: "repeater", group: "Attack" },
+  { id: "interactions", label: "Interactions", icon: "globe", group: "Attack" },
   { id: "sequencer", label: "Sequencer", icon: "sequencer", group: "Tools" },
   { id: "decoder", label: "Decoder", icon: "decoder", group: "Tools" },
   { id: "comparer", label: "Comparer", icon: "comparer", group: "Tools" },
@@ -61,7 +63,7 @@ const MAX_ROWS = 5000;
 // Tools that hold their working state internally (unlike Repeater, whose state
 // is lifted to App). They are mounted once and merely hidden when inactive, so
 // switching tabs and coming back keeps their input, results and settings.
-const KEEPALIVE_TOOLS = ["intruder", "decoder", "comparer", "sequencer", "jwt"];
+const KEEPALIVE_TOOLS = ["intruder", "decoder", "comparer", "sequencer", "jwt", "interactions"];
 
 function matches(s: TransactionSummary, f: HistoryFilter): boolean {
   if (f.host && !s.host.toLowerCase().includes(f.host.toLowerCase())) return false;
@@ -778,6 +780,9 @@ export default function App() {
           </div>
           <div className="keepalive" style={{ display: tool === "jwt" ? "flex" : "none" }}>
             <Jwt />
+          </div>
+          <div className="keepalive" style={{ display: tool === "interactions" ? "flex" : "none" }}>
+            <Interactions onGoToSettings={() => setTool("settings")} />
           </div>
           {main}
         </main>

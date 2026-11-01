@@ -133,6 +133,7 @@ impl TrafficSink for TauriSink {
                 },
             ),
             TrafficEvent::FindingAdded(f) => self.app.emit("finding-added", f.as_ref()),
+            TrafficEvent::Oob(hit) => self.app.emit("oob-interaction", hit.as_ref()),
             TrafficEvent::RequestStarted(_) => Ok(()),
         };
         if let Err(e) = result {
@@ -171,6 +172,14 @@ struct ConfigView {
     history_max_rows: usize,
     #[serde(default = "default_true")]
     passive_scan_enabled: bool,
+    #[serde(default)]
+    oob_server: String,
+    #[serde(default)]
+    oob_public_ip: String,
+    #[serde(default = "default_oob_dns_bind")]
+    oob_dns_bind: String,
+    #[serde(default = "default_oob_http_bind")]
+    oob_http_bind: String,
 }
 
 fn default_true() -> bool {
@@ -178,6 +187,12 @@ fn default_true() -> bool {
 }
 fn default_timeout_ms() -> u64 {
     30_000
+}
+fn default_oob_dns_bind() -> String {
+    "0.0.0.0:53".to_string()
+}
+fn default_oob_http_bind() -> String {
+    "0.0.0.0:80".to_string()
 }
 
 impl ConfigView {
@@ -196,6 +211,10 @@ impl ConfigView {
             request_timeout_ms: c.request_timeout_ms,
             history_max_rows: c.history_max_rows,
             passive_scan_enabled: c.passive_scan_enabled,
+            oob_server: c.oob_server.clone(),
+            oob_public_ip: c.oob_public_ip.clone(),
+            oob_dns_bind: c.oob_dns_bind.clone(),
+            oob_http_bind: c.oob_http_bind.clone(),
         }
     }
     fn apply_to(&self, base: &ProxyConfig) -> Result<ProxyConfig, String> {
@@ -228,7 +247,25 @@ impl ConfigView {
             request_timeout_ms: self.request_timeout_ms.clamp(1_000, 600_000),
             history_max_rows: self.history_max_rows,
             passive_scan_enabled: self.passive_scan_enabled,
-            // Crawler/active/OOB settings aren't on this form; keep the base values.
+            oob_server: self.oob_server.trim().trim_end_matches('.').to_string(),
+            oob_public_ip: self.oob_public_ip.trim().to_string(),
+            oob_dns_bind: {
+                let b = self.oob_dns_bind.trim();
+                if b.is_empty() {
+                    default_oob_dns_bind()
+                } else {
+                    b.to_string()
+                }
+            },
+            oob_http_bind: {
+                let b = self.oob_http_bind.trim();
+                if b.is_empty() {
+                    default_oob_http_bind()
+                } else {
+                    b.to_string()
+                }
+            },
+            // Crawler/active settings aren't on this form; keep the base values.
             ..base.clone()
         })
     }
@@ -584,6 +621,37 @@ fn scope_set(state: State<AppState>, rules: Vec<ScopeRule>) -> CmdResult<Vec<Sco
 #[tauri::command]
 fn scope_check(state: State<AppState>, url: String) -> bool {
     state.engine.in_scope_url(&url)
+}
+
+// ---- out-of-band interaction server (OAST) ----
+
+#[tauri::command]
+fn oob_status(state: State<AppState>) -> shrike_engine::oob::OobStatus {
+    state.engine.oob_status()
+}
+
+#[tauri::command]
+async fn oob_start(state: State<'_, AppState>) -> CmdResult<shrike_engine::oob::OobStatus> {
+    off_main(&state, |e| e.oob_start().map_err(err)).await
+}
+
+#[tauri::command]
+async fn oob_stop(state: State<'_, AppState>) -> CmdResult<shrike_engine::oob::OobStatus> {
+    off_main(&state, |e| {
+        e.oob_stop();
+        Ok(e.oob_status())
+    })
+    .await
+}
+
+#[tauri::command]
+fn oob_generate(state: State<AppState>) -> CmdResult<shrike_engine::oob::OobHandle> {
+    state.engine.oob_generate().map_err(err)
+}
+
+#[tauri::command]
+fn oob_interactions(state: State<AppState>) -> Vec<shrike_engine::oob::OobInteraction> {
+    state.engine.oob_interactions()
 }
 
 // ---- match & replace ----
@@ -1319,6 +1387,11 @@ pub fn run() {
             jwt_decode,
             jwt_sign,
             jwt_verify,
+            oob_status,
+            oob_start,
+            oob_stop,
+            oob_generate,
+            oob_interactions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shrike");

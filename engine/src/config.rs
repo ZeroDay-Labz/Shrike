@@ -64,9 +64,19 @@ pub struct ProxyConfig {
     pub crawl_max_pages: usize,
     /// Active scanner: max concurrent in-flight probe requests.
     pub active_scan_concurrency: usize,
-    /// Out-of-band interaction server (empty = disabled). Opt-in; used only by
-    /// blind/OAST active checks.
+    /// Out-of-band interaction domain (empty = disabled). Tokens are minted as
+    /// `<token>.<domain>`; the tester points a wildcard DNS record at the server.
+    /// Opt-in; used by the Interactions panel and blind/OAST active checks.
     pub oob_server: String,
+    /// Public IP the OOB DNS responder answers `A` queries with (empty = answer
+    /// with no record; the query is still logged). This is the server's own
+    /// address as targets reach it.
+    pub oob_public_ip: String,
+    /// Address the OOB DNS responder binds (`0.0.0.0:53` by default; port 53
+    /// needs privilege, so a high port is accepted for unprivileged runs).
+    pub oob_dns_bind: String,
+    /// Address the OOB HTTP listener binds (`0.0.0.0:80` by default).
+    pub oob_http_bind: String,
 }
 
 impl ProxyConfig {
@@ -116,6 +126,9 @@ impl Default for ProxyConfig {
             crawl_max_pages: 500,
             active_scan_concurrency: 10,
             oob_server: String::new(),
+            oob_public_ip: String::new(),
+            oob_dns_bind: "0.0.0.0:53".to_string(),
+            oob_http_bind: "0.0.0.0:80".to_string(),
         }
     }
 }

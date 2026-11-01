@@ -10,6 +10,9 @@
 
 use serde::Serialize;
 
+pub mod server;
+pub use server::{OobConfig, OobServer};
+
 /// A registered OOB correlation: the payload to inject and the id to poll.
 #[derive(Debug, Clone, Serialize)]
 pub struct OobHandle {
@@ -30,6 +33,26 @@ pub struct OobInteraction {
     pub source: String,
     pub at_ms: u64,
     pub detail: String,
+    /// The payload token this callback correlates to (the subdomain label under
+    /// the OOB domain), or empty when the hit didn't carry a known token.
+    #[serde(default)]
+    pub correlation_id: String,
+}
+
+/// Status of the OOB interaction server, for the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct OobStatus {
+    pub running: bool,
+    /// The payload domain tokens are minted under.
+    pub domain: String,
+    /// Bound DNS address (empty when not running).
+    pub dns_addr: String,
+    /// Bound HTTP address (empty when not running).
+    pub http_addr: String,
+    /// The public IP `A` queries are answered with (empty = none).
+    pub public_ip: String,
+    /// Interactions logged this session.
+    pub interactions: usize,
 }
 
 /// An out-of-band interaction server.

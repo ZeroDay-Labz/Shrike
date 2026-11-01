@@ -38,6 +38,11 @@ export const api = {
   annotationSet: (transactionId: number, color: string | null, note: string | null) =>
     invoke<void>("annotation_set", { transactionId, color, note }),
   findingsReport: (format: "json" | "html") => invoke<string>("findings_report", { format }),
+  oobStatus: () => invoke<import("./types").OobStatus>("oob_status"),
+  oobStart: () => invoke<import("./types").OobStatus>("oob_start"),
+  oobStop: () => invoke<import("./types").OobStatus>("oob_stop"),
+  oobGenerate: () => invoke<import("./types").OobHandle>("oob_generate"),
+  oobInteractions: () => invoke<import("./types").OobInteraction[]>("oob_interactions"),
   projectInfo: () => invoke<ProjectMeta>("project_info"),
   projectSetName: (name: string) => invoke<ProjectMeta>("project_set_name", { name }),
   projectBackup: (path: string) => invoke<string>("project_backup", { path }),
@@ -123,4 +128,6 @@ export const events = {
     listen<import("./types").ActiveScanEvent>("scan-progress", (e) => cb(e.payload)),
   onBrowserClosed: (cb: () => void): Promise<UnlistenFn> =>
     listen("browser-closed", () => cb()),
+  onOob: (cb: (hit: import("./types").OobInteraction) => void): Promise<UnlistenFn> =>
+    listen<import("./types").OobInteraction>("oob-interaction", (e) => cb(e.payload)),
 };

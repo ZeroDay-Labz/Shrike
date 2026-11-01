@@ -17,6 +17,7 @@ use crate::{
         JvmRuntime, JvmStatus, RunningBapp,
     },
     match_replace::{MatchReplace, MatchReplaceRule},
+    oob::OobProvider,
     plugins::{PluginManifest, PluginRegistry},
     proxy,
     race::{self, RaceConfig},
@@ -222,6 +223,9 @@ pub struct Engine {
     /// Live console state (name, registrations, captured output) for each running
     /// BApp, updated by its host-process reader thread. Shared with the bridge.
     bapp_state: Arc<Mutex<HashMap<String, Arc<Mutex<RunningBapp>>>>>,
+    /// The out-of-band interaction server, when running (DNS + HTTP listeners
+    /// for confirming blind vulnerabilities). `None` until started.
+    oob: Mutex<Option<Arc<crate::oob::OobServer>>>,
     /// HTTP sender for manual tools (Repeater); rebuilt when TLS config changes.
     sender: RwLock<Arc<Sender>>,
     /// Cancellation flags for running Intruder attacks, keyed by attack id.
@@ -312,6 +316,7 @@ impl Engine {
             jvm_resources: Mutex::new(None),
             bapp_hosts,
             bapp_state,
+            oob: Mutex::new(None),
             sender: RwLock::new(sender),
             attacks: Mutex::new(HashMap::new()),
             next_attack_id: AtomicU64::new(1),
@@ -1756,6 +1761,113 @@ impl Engine {
             .map(Arc::clone)
             .ok_or_else(|| anyhow!("that extension is not running"))?;
         host.menu_fire(item_id, std::time::Duration::from_secs(5))
+    }
+
+    // --- out-of-band interaction server (OAST) ---
+
+    /// Current OOB server status (running, bound addresses, interaction count).
+    pub fn oob_status(&self) -> crate::oob::OobStatus {
+        let cfg = self.config();
+        let g = self.oob.lock().expect("oob lock");
+        match g.as_ref() {
+            Some(s) => crate::oob::OobStatus {
+                running: true,
+                domain: s.domain().to_string(),
+                dns_addr: s.dns_addr().to_string(),
+                http_addr: s.http_addr().to_string(),
+                public_ip: cfg.oob_public_ip,
+                interactions: s.interactions().len(),
+            },
+            None => crate::oob::OobStatus {
+                running: false,
+                domain: cfg.oob_server,
+                dns_addr: String::new(),
+                http_addr: String::new(),
+                public_ip: cfg.oob_public_ip,
+                interactions: 0,
+            },
+        }
+    }
+
+    /// Start (or restart) the OOB server from the configured domain/IP/binds.
+    /// Interactions are pushed onto the ingest bus as [`TrafficEvent::Oob`].
+    pub fn oob_start(&self) -> Result<crate::oob::OobStatus> {
+        let cfg = self.config();
+        let domain = cfg.oob_server.trim().trim_end_matches('.').to_string();
+        if domain.is_empty() {
+            return Err(anyhow!("set an OOB domain in Settings first"));
+        }
+        let public_ip = if cfg.oob_public_ip.trim().is_empty() {
+            None
+        } else {
+            Some(
+                cfg.oob_public_ip
+                    .trim()
+                    .parse()
+                    .map_err(|e| anyhow!("invalid OOB public IP: {e}"))?,
+            )
+        };
+        let dns_bind = cfg
+            .oob_dns_bind
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("invalid OOB DNS bind address: {e}"))?;
+        let http_bind = cfg
+            .oob_http_bind
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("invalid OOB HTTP bind address: {e}"))?;
+
+        if let Some(prev) = self.oob.lock().expect("oob lock").take() {
+            prev.stop();
+        }
+        let bus = self.ingest.clone();
+        let on: crate::oob::server::OnInteraction = Arc::new(move |hit| {
+            bus.emit(crate::core::TrafficEvent::Oob(Arc::new(hit)));
+        });
+        let server = self
+            .runtime
+            .block_on(crate::oob::OobServer::start(
+                crate::oob::OobConfig {
+                    domain,
+                    public_ip,
+                    dns_bind,
+                    http_bind,
+                },
+                on,
+            ))
+            .map_err(|e| anyhow!("{e:#}"))?;
+        *self.oob.lock().expect("oob lock") = Some(server);
+        info!("OOB interaction server started");
+        Ok(self.oob_status())
+    }
+
+    /// Stop the OOB server if it is running.
+    pub fn oob_stop(&self) {
+        if let Some(s) = self.oob.lock().expect("oob lock").take() {
+            s.stop();
+            info!("OOB interaction server stopped");
+        }
+    }
+
+    /// Mint a fresh OOB payload (`<token>.<domain>` + URL) to inject into a probe.
+    pub fn oob_generate(&self) -> Result<crate::oob::OobHandle> {
+        self.oob
+            .lock()
+            .expect("oob lock")
+            .as_ref()
+            .and_then(|s| s.register())
+            .ok_or_else(|| anyhow!("the OOB server isn't running — start it first"))
+    }
+
+    /// Every interaction the OOB server has logged this session, oldest first.
+    pub fn oob_interactions(&self) -> Vec<crate::oob::OobInteraction> {
+        self.oob
+            .lock()
+            .expect("oob lock")
+            .as_ref()
+            .map(|s| s.interactions())
+            .unwrap_or_default()
     }
 
     /// One-click Java runtime setup: stage the host + Montoya jars into the

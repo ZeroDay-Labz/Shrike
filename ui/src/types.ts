@@ -85,6 +85,33 @@ export interface ConfigView {
   request_timeout_ms: number;
   history_max_rows: number;
   passive_scan_enabled: boolean;
+  oob_server: string;
+  oob_public_ip: string;
+  oob_dns_bind: string;
+  oob_http_bind: string;
+}
+
+export interface OobStatus {
+  running: boolean;
+  domain: string;
+  dns_addr: string;
+  http_addr: string;
+  public_ip: string;
+  interactions: number;
+}
+
+export interface OobHandle {
+  correlation_id: string;
+  payload_host: string;
+  payload_url: string;
+}
+
+export interface OobInteraction {
+  kind: string;
+  source: string;
+  at_ms: number;
+  detail: string;
+  correlation_id: string;
 }
 
 export interface BrowserStatus {

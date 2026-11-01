@@ -16,6 +16,10 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
   const [timeoutMs, setTimeoutMs] = useState(30000);
   const [historyMax, setHistoryMax] = useState(0);
   const [passiveScan, setPassiveScan] = useState(true);
+  const [oobServer, setOobServer] = useState("");
+  const [oobPublicIp, setOobPublicIp] = useState("");
+  const [oobDnsBind, setOobDnsBind] = useState("0.0.0.0:53");
+  const [oobHttpBind, setOobHttpBind] = useState("0.0.0.0:80");
   const [msg, setMsg] = useState("");
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
@@ -33,6 +37,10 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
       setTimeoutMs(props.config.request_timeout_ms ?? 30000);
       setHistoryMax(props.config.history_max_rows ?? 0);
       setPassiveScan(props.config.passive_scan_enabled ?? true);
+      setOobServer(props.config.oob_server ?? "");
+      setOobPublicIp(props.config.oob_public_ip ?? "");
+      setOobDnsBind(props.config.oob_dns_bind || "0.0.0.0:53");
+      setOobHttpBind(props.config.oob_http_bind || "0.0.0.0:80");
     }
   }, [props.config]);
 
@@ -53,6 +61,10 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
         request_timeout_ms: timeoutMs,
         history_max_rows: historyMax,
         passive_scan_enabled: passiveScan,
+        oob_server: oobServer.trim(),
+        oob_public_ip: oobPublicIp.trim(),
+        oob_dns_bind: oobDnsBind.trim(),
+        oob_http_bind: oobHttpBind.trim(),
       };
       const saved = await api.configSet(next);
       props.onSaved(saved);
@@ -132,6 +144,32 @@ export function Settings(props: { config?: ConfigView; onSaved: (c: ConfigView) 
             <input type="password" value={githubToken} placeholder="lifts GitHub's 60-requests/hour limit when browsing/installing"
               onChange={(e) => setGithubToken(e.target.value)} />
           </label>
+        </section>
+
+        <section className="settings-card">
+          <h3>Out-of-band interactions (OAST)</h3>
+          <p className="mut">
+            A self-hosted DNS + HTTP listener for confirming blind vulnerabilities. Point a wildcard
+            DNS record (<code>*.your-domain</code>) at this host's public IP. Start/stop it and watch
+            callbacks in the Interactions tab.
+          </p>
+          <label>Payload domain
+            <input value={oobServer} placeholder="oast.your-domain.com"
+              onChange={(e) => setOobServer(e.target.value)} />
+          </label>
+          <label>Public IP (answer for A queries)
+            <input value={oobPublicIp} placeholder="203.0.113.10 — this host as targets reach it"
+              onChange={(e) => setOobPublicIp(e.target.value)} />
+          </label>
+          <label>DNS listener bind
+            <input value={oobDnsBind} placeholder="0.0.0.0:53"
+              onChange={(e) => setOobDnsBind(e.target.value)} />
+          </label>
+          <label>HTTP listener bind
+            <input value={oobHttpBind} placeholder="0.0.0.0:80"
+              onChange={(e) => setOobHttpBind(e.target.value)} />
+          </label>
+          <p className="mut">Ports 53/80 need privilege — use high ports (e.g. 5353 / 8080) for an unprivileged run.</p>
         </section>
 
         <section className="settings-card">
