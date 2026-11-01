@@ -34,7 +34,7 @@
       "nsis"
     ],
     "resources": [
-      "resources/chromium/**/*",
+      "resources/firefox/**/*",
       "resources/jvm/**/*"
     ],
     "category": "DeveloperTool",

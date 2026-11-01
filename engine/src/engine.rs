@@ -1254,34 +1254,56 @@ impl Engine {
 
     // --- integrated browser ---
 
-    /// True if an integrated browser is available (the bundled one passed as
-    /// `bin`, else a system Firefox, else a Chromium-family fallback / override).
-    pub fn browser_available(&self, bin: Option<std::path::PathBuf>) -> bool {
-        if bin.as_ref().is_some_and(|p| p.is_file()) {
-            return true;
-        }
-        let override_path = self.config().chromium_path;
-        browser::find_system_firefox(override_path.as_deref()).is_some()
-            || browser::find_system_chromium(override_path.as_deref()).is_some()
+    /// True if an integrated browser is available: the bundled Firefox or
+    /// Chromium passed in, a system Firefox, or a Chromium-family fallback.
+    pub fn browser_available(
+        &self,
+        bundled_firefox: Option<std::path::PathBuf>,
+        bundled_chromium: Option<std::path::PathBuf>,
+    ) -> bool {
+        self.resolve_browser(bundled_firefox, bundled_chromium)
+            .is_some()
+    }
+
+    /// Pick the integrated browser binary, Firefox first. Order: an explicit
+    /// Settings override, the bundled Firefox, a system Firefox, the bundled
+    /// Chromium, then a system Chromium. Firefox always beats Chromium so a
+    /// leftover Chromium bundle never shadows the preferred engine.
+    fn resolve_browser(
+        &self,
+        bundled_firefox: Option<std::path::PathBuf>,
+        bundled_chromium: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf> {
+        let override_bin = self
+            .config()
+            .chromium_path
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| std::path::PathBuf::from(s.trim()))
+            .filter(|p| p.is_file());
+        override_bin
+            .or_else(|| bundled_firefox.filter(|p| p.is_file()))
+            .or_else(|| browser::find_system_firefox(None))
+            .or_else(|| bundled_chromium.filter(|p| p.is_file()))
+            .or_else(|| browser::find_system_chromium(None))
     }
 
     /// Launch the integrated browser, pre-configured to proxy through Shrike with
-    /// the CA trusted and an isolated profile. `bin` is the bundled browser path
-    /// resolved by the GUI; when `None`, a system Firefox is preferred, then a
-    /// Chromium-family fallback. Starts the proxy first if it is not running.
-    pub fn launch_browser(&self, bin: Option<std::path::PathBuf>) -> Result<BrowserStatus> {
-        let override_path = self.config().chromium_path;
-        let browser_bin = match bin.filter(|p| p.is_file()) {
-            Some(p) => p,
-            None => browser::find_system_firefox(override_path.as_deref())
-                .or_else(|| browser::find_system_chromium(override_path.as_deref()))
-                .ok_or_else(|| {
-                    anyhow!(
-                        "no browser found. Install Firefox (or a Chromium-family browser), \
-                         or set a path in Settings."
-                    )
-                })?,
-        };
+    /// the CA trusted and an isolated profile. `bundled_firefox`/`bundled_chromium`
+    /// are the bundled paths resolved by the GUI; a system browser is used when
+    /// neither is present. Starts the proxy first if it is not running.
+    pub fn launch_browser(
+        &self,
+        bundled_firefox: Option<std::path::PathBuf>,
+        bundled_chromium: Option<std::path::PathBuf>,
+    ) -> Result<BrowserStatus> {
+        let browser_bin = self
+            .resolve_browser(bundled_firefox, bundled_chromium)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no browser found. Install Firefox (or a Chromium-family browser), \
+                     or set a path in Settings."
+                )
+            })?;
         let engine = browser::detect_engine(&browser_bin);
 
         let listen = match self.local_addr() {

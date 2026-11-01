@@ -60,10 +60,11 @@ jobs:
       - name: Install UI dependencies
         run: npm --prefix ui ci
 
-      # Fetch Chrome for Testing into src-tauri/resources/chromium/ so the Tauri
-      # bundler folds it into the package (the resources glob picks it up).
-      - name: Bundle Chromium
-        run: node scripts/fetch-chromium.mjs
+      # Fetch Firefox into src-tauri/resources/firefox/ so the Tauri bundler
+      # folds it into the package (the resources glob picks it up). Firefox is the
+      # integrated browser; it is configured with Shrike's proxy and CA at launch.
+      - name: Bundle Firefox
+        run: node scripts/fetch-firefox.mjs
 
       - name: Build bundles
         run: npm --prefix ui exec -- tauri build --bundles ${{ matrix.targets }}

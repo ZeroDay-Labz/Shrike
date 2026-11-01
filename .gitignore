@@ -32,3 +32,6 @@ ui/dist/
 /src-tauri/resources/jvm/runtime/
 /jvm-host/build/
 /jvm-host/lib/jython-standalone*.jar
+# Bundled Firefox (downloaded by scripts/fetch-firefox.*; too big to commit)
+/src-tauri/resources/firefox/*
+!/src-tauri/resources/firefox/README.md

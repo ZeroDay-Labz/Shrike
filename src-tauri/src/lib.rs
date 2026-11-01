@@ -1238,27 +1238,23 @@ fn resolve_bundled_firefox(app: &AppHandle) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The bundled integrated browser: Firefox when present, else the Chromium
-/// fallback. `None` leaves the engine to find a system browser.
-fn resolve_bundled_browser(app: &AppHandle) -> Option<std::path::PathBuf> {
-    resolve_bundled_firefox(app).or_else(|| resolve_bundled_chromium(app))
-}
-
 #[tauri::command]
 async fn launch_browser(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> CmdResult<shrike_engine::browser::BrowserStatus> {
     // May start the proxy first, then spawns the browser (Firefox, else Chromium).
-    let bin = resolve_bundled_browser(&app);
-    off_main(&state, move |e| e.launch_browser(bin).map_err(err)).await
+    let ff = resolve_bundled_firefox(&app);
+    let chromium = resolve_bundled_chromium(&app);
+    off_main(&state, move |e| e.launch_browser(ff, chromium).map_err(err)).await
 }
 
 #[tauri::command]
 fn browser_available(state: State<AppState>, app: AppHandle) -> bool {
-    state
-        .engine
-        .browser_available(resolve_bundled_browser(&app))
+    state.engine.browser_available(
+        resolve_bundled_firefox(&app),
+        resolve_bundled_chromium(&app),
+    )
 }
 
 /// Validate a URL we're about to hand to the OS opener: http(s) only, a real
