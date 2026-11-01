@@ -1,9 +1,9 @@
 # Build and publish release artifacts when a version tag (v*) is pushed.
 #
 # Produces:
-#   Linux   — .deb, .rpm, .AppImage (Tauri bundler) and a portable .tar.gz
-#   Windows — NSIS installer (.exe)
-#   Flatpak — .flatpak bundle assembled from the Linux tarball
+#   Linux:   .deb, .rpm, .AppImage (Tauri bundler) and a portable .tar.gz
+#   Windows: NSIS installer (.exe)
+#   Flatpak: .flatpak bundle assembled from the Linux tarball
 #
 # Chrome for Testing IS bundled into every package (fetched per-OS before the
 # Tauri build) so the integrated browser works with no system browser and no
@@ -90,6 +90,24 @@ jobs:
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
+          body: |
+            **Shrike** is an open source **web application security testing platform** and a **Burp Suite alternative**, written in Rust. It bundles an intercepting HTTPS proxy, a web vulnerability scanner, a fuzzer, an out-of-band (OAST) interaction server, content discovery and a templated detection engine into one desktop app, with no subscription and no telemetry.
+
+            ### Install
+            Download the package for your platform below, then see the [README](https://github.com/ZeroDay-Labz/Shrike#readme) for setup and the full feature list.
+
+            | Platform | File |
+            | --- | --- |
+            | Windows 10/11 (x64) | `Shrike_<version>_x64-setup.exe` |
+            | Debian / Ubuntu | `Shrike_<version>_amd64.deb` |
+            | Fedora / RHEL / openSUSE | `Shrike-<version>-1.x86_64.rpm` |
+            | Any Linux (AppImage) | `Shrike_<version>_amd64.AppImage` |
+            | Any Linux (portable) | `shrike-<version>-linux-x86_64.tar.gz` |
+            | Any Linux (Flatpak) | `shrike.flatpak` |
+
+            Curated highlights are in the [CHANGELOG](https://github.com/ZeroDay-Labz/Shrike/blob/main/CHANGELOG.md). The commit-level list of fixes and additions in this release is below.
+
+            <sub>web application security testing · open source Burp Suite alternative · intercepting proxy · web vulnerability scanner · penetration testing · bug bounty · DAST · OWASP · OAST out-of-band interaction server · content discovery · fuzzer · Rust</sub>
           files: |
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
